@@ -230,7 +230,7 @@ def main(argv=None) -> int:
             finally:
                 runtime.scan_finished()
             logger.info(
-                "poll complete: open=%s scanned=%s new_failures=%s sent=%s "
+                "poll complete: open=%s scanned=%s new_notifications=%s sent=%s "
                 "send_failed=%s uncertain=%s unmapped=%s errors=%s",
                 report.open_prs,
                 report.scanned_prs,

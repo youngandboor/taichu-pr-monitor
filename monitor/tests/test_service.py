@@ -136,6 +136,51 @@ class MonitorServiceTest(unittest.TestCase):
                 self.assertEqual(1, len(snapshots))
                 self.assertEqual("taichu/pr-build", snapshots[0].failures[0].context)
 
+    def test_new_build_success_sends_once_for_each_build_command(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = FakeGiteaClient()
+            sender = SequenceSender(["success"])
+            service, store = self.make_service(
+                temp_dir,
+                client,
+                sender,
+                Clock(
+                    "2026-07-10T10:05:00+08:00",
+                    "2026-07-10T10:08:00+08:00",
+                    "2026-07-10T10:11:00+08:00",
+                ),
+            )
+            with store:
+                baseline = service.poll_once()
+                client.comments = [
+                    {
+                        "id": 2,
+                        "body": "/ci build",
+                        "created_at": "2026-07-10T10:06:00+08:00",
+                    }
+                ]
+                client.statuses = [
+                    {
+                        "id": 2,
+                        "context": "taichu/pr-build",
+                        "state": "success",
+                        "description": "build success",
+                        "updated_at": "2026-07-10T10:07:00+08:00",
+                    }
+                ]
+
+                succeeded = service.poll_once()
+                repeated = service.poll_once()
+
+                self.assertEqual(0, baseline.new_notifications)
+                self.assertEqual(1, succeeded.new_notifications)
+                self.assertEqual(0, repeated.new_notifications)
+                self.assertEqual(1, len(sender.calls))
+                self.assertIn("CI Build 已通过", sender.calls[0][1])
+                self.assertIn("PR #7", sender.calls[0][1])
+                self.assertIn("/ci merge", sender.calls[0][1])
+                self.assertEqual("sent", store.list_outbox()[0].status)
+
     def test_gitea_derived_sender_self_recipient_is_routed_to_fallback(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             client = FakeGiteaClient()

@@ -66,6 +66,9 @@ class PrSnapshot:
     scanned_at: str
     failures: Tuple[GateFailure, ...]
     author_w3: str = ""
+    pr_build_state: str = ""
+    pr_build_updated_at: str = ""
+    pr_build_summary: str = ""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -84,6 +87,7 @@ class TrackerState:
 class TrackerResult:
     state: TrackerState
     notifications: Tuple[GateFailure, ...]
+    build_success: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -197,6 +201,8 @@ def build_pr_snapshot(
         if candidate and is_actionable_failure(candidate.state, candidate.summary):
             failures.append(GateFailure(context, candidate.updated_at, candidate.summary))
 
+    pr_build = latest_by_context.get("taichu/pr-build")
+
     url = _value(pr.get("html_url")).strip()
     if not url:
         url = f"{web_base.rstrip('/')}/{owner}/{repo}/pulls/{number}"
@@ -212,6 +218,9 @@ def build_pr_snapshot(
         scanned_at=_value(scanned_at),
         failures=tuple(failures),
         author_w3=derive_w3_account(user),
+        pr_build_state=pr_build.state if pr_build else "",
+        pr_build_updated_at=pr_build.updated_at if pr_build else "",
+        pr_build_summary=pr_build.summary if pr_build else "",
     )
 
 
@@ -264,13 +273,25 @@ def poll_tracker(state: TrackerState, snapshot: PrSnapshot) -> TrackerResult:
         notified.add(key)
         notifications.append(failure)
 
+    success_key = build_success_key(snapshot)
+    build_success = False
+    if success_key:
+        if state.last_scanned_at and not _happened_after_scan(
+            snapshot.pr_build_updated_at,
+            state.last_scanned_at,
+        ):
+            notified.add(success_key)
+        elif success_key not in notified:
+            notified.add(success_key)
+            build_success = True
+
     next_state = TrackerState(
         snapshot.latest_ci_command_key,
         frozenset(notified),
         True,
         _scan_watermark(state, snapshot),
     )
-    return TrackerResult(next_state, tuple(notifications))
+    return TrackerResult(next_state, tuple(notifications), build_success)
 
 
 def failure_key(snapshot: PrSnapshot, failure: GateFailure) -> str:
@@ -280,6 +301,26 @@ def failure_key(snapshot: PrSnapshot, failure: GateFailure) -> str:
             failure.context,
             failure.updated_at,
             notification_text(failure.summary),
+        )
+    )
+
+
+def build_success_key(snapshot: PrSnapshot) -> str:
+    if (
+        snapshot.latest_ci_command != "/ci build"
+        or snapshot.pr_build_state != "success"
+        or not snapshot.latest_ci_command_key
+        or not snapshot.latest_ci_command_at
+        or not snapshot.pr_build_updated_at
+        or _time_key(snapshot.pr_build_updated_at) < _time_key(snapshot.latest_ci_command_at)
+    ):
+        return ""
+    return ":".join(
+        (
+            snapshot.latest_ci_command_key,
+            "taichu/pr-build",
+            "success",
+            snapshot.head_sha,
         )
     )
 
@@ -310,6 +351,9 @@ def _initialize_baseline(state: TrackerState, snapshot: PrSnapshot) -> TrackerSt
     )
     for failure in _failures_after_command(snapshot):
         notified.add(failure_key(snapshot, failure))
+    success_key = build_success_key(snapshot)
+    if success_key:
+        notified.add(success_key)
     return TrackerState(
         snapshot.latest_ci_command_key,
         frozenset(notified),
@@ -337,6 +381,8 @@ def _scan_watermark(state: TrackerState, snapshot: PrSnapshot) -> str:
     for failure in snapshot.failures:
         if _time_key(failure.updated_at) > _time_key(watermark):
             watermark = failure.updated_at
+    if _time_key(snapshot.pr_build_updated_at) > _time_key(watermark):
+        watermark = snapshot.pr_build_updated_at
     return watermark
 
 

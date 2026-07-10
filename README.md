@@ -22,7 +22,7 @@
 | [`android/`](android/) | 商用 Android 手机随时监控 | PAT 授权、后台轮询、失败通知、rebuild/remerge |
 | [`harmony/`](harmony/) | HarmonyOS 原生手机 | ArkTS 原生页面、OAuth2 PKCE、rebuild/remerge |
 | [`web/`](web/) | Mac/PC 本地快速查看 | 单文件 Python bridge、紧凑 Web 页面、只读访问 |
-| [`monitor/`](monitor/) | 内网 Windows 持续监控 | 全部开放 PR、3 分钟轮询、WeLink 私聊、本地运维工作台 |
+| [`monitor/`](monitor/) | 内网 Windows 持续监控 | 全部开放 PR、3 分钟轮询、失败与 CI Build 成功私聊、本地运维工作台 |
 
 ## 快速开始
 

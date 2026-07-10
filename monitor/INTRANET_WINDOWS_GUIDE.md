@@ -10,6 +10,7 @@
 - 只识别五个关键门禁的当前失败；
 - 第一次运行只建立基线，不补发历史问题；
 - 新问题通过 WeLink 私聊发送给 PR 提交人；
+- 当前 head 的每个 `/ci build` 轮次成功后私聊一次，不补发历史成功；
 - 从 Gitea `full_name` 自动生成“姓氏拼音首字母 + 8 位工号”的 WeLink W3 账号；
 - 浏览器可在 `http://127.0.0.1:8790` 查看运行状态和发送记录。
 
@@ -159,7 +160,7 @@ py -3 -m monitor --once --dry-run --strict-recipients --state-db "$env:TEMP\taic
 开放 PR 较多时可能需要几十秒。成功日志类似：
 
 ```text
-poll complete: open=... scanned=... new_failures=0 sent=0 ... errors=0
+poll complete: open=... scanned=... new_notifications=0 sent=0 ... errors=0
 ```
 
 重点看 `errors=0`。如果是 `401`、`403` 或无法连接 Gitea，先检查 PAT 和内网访问。
@@ -191,7 +192,7 @@ $env:TAICHU_WELINK_SELF_FALLBACK = "y备用接收账号"
 py -3 -m monitor --once --strict-recipients
 ```
 
-这是正式状态库的第一次扫描。它会记录当前已有问题作为基线，不会把全部历史失败群发出去。
+这是正式状态库的第一次扫描。它会记录当前已有问题和 CI Build 成功作为基线，不会群发历史结果。
 
 默认状态库位于：
 
@@ -233,8 +234,10 @@ dashboard available at http://127.0.0.1:8790
 4. 等待一个轮询周期加扫描时间，通常不超过 4 分钟；
 5. 确认对应提交人或备用接收人收到包含 PR 编号、标题和失败摘要的 WeLink 消息；
 6. 再等待一轮，确认同一问题不会重复发送。
+7. 再触发一个新的 `/ci build` 并让它成功，确认收到一次“CI Build 已通过”；
+8. 再等待一轮，确认同一 build 轮次不会重复发送成功消息。
 
-只有基线之后产生的新失败才应该通知。旧 head、旧命令轮次和历史评论不会补发。
+只有基线之后产生的新失败和新的 CI Build 成功才应该通知。旧 head、旧命令轮次和历史评论不会补发。成功消息中的 `/ci merge` 只是提示，仍需用户打开 PR 手工评论。
 
 ## 以后每天怎么启动
 
@@ -289,6 +292,7 @@ py -3 -m monitor --strict-recipients --open-dashboard
 | 给自己发送失败 | WeLink 不支持自发消息；配置发送账号和备用接收人，或改用不提交 PR 的专用发送账号 |
 | 发给了错误的人 | 立即按 `Ctrl+C` 停止，核对 Gitea 登录号和 W3 账号，必要时使用映射表 |
 | 新失败没有通知 | 确认它发生在首次基线之后、属于当前 head 和五个关键门禁，并检查工作台 outbox |
+| CI Build 成功没有通知 | 确认最新命令是新的 `/ci build`，当前 head 的 `taichu/pr-build` 成功时间晚于该命令，并检查 outbox |
 | `git pull` 提示本地修改冲突 | 不要执行 `git reset --hard`；保留现场并联系维护者 |
 
 Gitea API 超时时，可以先检查直连 443 端口：
@@ -352,4 +356,5 @@ py -3 -m monitor --list-outbox > "$HOME\Desktop\taichu-monitor-outbox.json"
 - [ ] 正式基线已完成；
 - [ ] 工作台能打开并持续刷新；
 - [ ] 基线后制造的新失败只通知一次；
+- [ ] 新的 CI Build 成功只通知一次；
 - [ ] 已记录谁负责保持电脑开机、WeLink 登录和 PowerShell 进程运行。
