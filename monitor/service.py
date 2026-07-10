@@ -8,6 +8,7 @@ import hashlib
 import json
 import logging
 import pathlib
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Dict, List, Optional
 
@@ -25,6 +26,7 @@ from .state import MonitorStore, OutboxEvent
 @dataclasses.dataclass
 class PollReport:
     scanned_at: str
+    duration_seconds: float = 0.0
     open_prs: int = 0
     scanned_prs: int = 0
     new_notifications: int = 0
@@ -101,9 +103,11 @@ class MonitorService:
         self.logger = logger or logging.getLogger(__name__)
 
     def poll_once(self) -> PollReport:
+        started = time.monotonic()
         scanned_at = self.clock()
         report = PollReport(scanned_at=scanned_at)
         recipients_ready = True
+        listing_succeeded = False
         try:
             self.recipients.refresh()
         except ValueError as error:
@@ -119,6 +123,7 @@ class MonitorService:
                 limit=100,
             )
             report.open_prs = len(pulls)
+            listing_succeeded = True
         except Exception as error:  # Keep pending deliveries moving during a Gitea outage.
             message = f"failed to list open pull requests: {error}"
             report.errors.append(message)
@@ -139,7 +144,12 @@ class MonitorService:
                     current = self.store.get_tracker(snapshot.number)
                     result = poll_tracker(current, snapshot)
                     event = self._event_for(snapshot, result.notifications)
-                    self.store.apply_poll(snapshot.number, result.state, event)
+                    self.store.apply_poll(
+                        snapshot.number,
+                        result.state,
+                        event,
+                        snapshot=snapshot,
+                    )
                     report.scanned_prs += 1
                     report.new_notifications += len(result.notifications)
                 except Exception as error:
@@ -149,6 +159,21 @@ class MonitorService:
 
         if recipients_ready:
             self._dispatch_outbox(report)
+        if listing_succeeded:
+            self.store.prune_snapshots(_pr_number(pr) for pr in pulls)
+        report.duration_seconds = time.monotonic() - started
+        self.store.record_scan(
+            scanned_at=report.scanned_at,
+            duration_seconds=report.duration_seconds,
+            open_prs=report.open_prs,
+            scanned_prs=report.scanned_prs,
+            new_notifications=report.new_notifications,
+            delivered=report.delivered,
+            delivery_failures=report.delivery_failures,
+            delivery_uncertain=report.delivery_uncertain,
+            unmapped=report.unmapped,
+            errors=report.errors,
+        )
         return report
 
     def _fetch_snapshot(self, pr, scanned_at: str) -> PrSnapshot:

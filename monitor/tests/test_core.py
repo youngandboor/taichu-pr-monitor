@@ -22,6 +22,15 @@ class GateLogicTest(unittest.TestCase):
         self.assertEqual("success", effective_state("passed", ""))
         self.assertEqual("success", effective_state("", "当前 head 该门禁已通过。"))
 
+    def test_explicit_success_is_not_overridden_by_artifact_error_filename(self):
+        summary = (
+            "TaiChu PR build：执行结果：成功\n"
+            "构建成功\n"
+            "testreport/error.txt：merge-gate 状态摘要"
+        )
+
+        self.assertEqual("success", effective_state("success", summary))
+
     def test_build_snapshot_keeps_only_latest_current_head_gate_failures(self):
         pr = {
             "number": 1222,

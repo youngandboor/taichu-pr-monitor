@@ -121,6 +121,7 @@ class MonitorServiceTest(unittest.TestCase):
                 }
             ]
             second = service.poll_once()
+            self.assertEqual(1, store.latest_scan().new_notifications)
             third = service.poll_once()
 
             self.assertEqual(0, first.new_notifications)
@@ -131,6 +132,9 @@ class MonitorServiceTest(unittest.TestCase):
             self.assertIn("PR #7", sender.calls[0][1])
             self.assertIn("taichu/pr-build", sender.calls[0][1])
             self.assertIn("compile error", sender.calls[0][1])
+            snapshots = store.list_snapshots()
+            self.assertEqual(1, len(snapshots))
+            self.assertEqual("taichu/pr-build", snapshots[0].failures[0].context)
 
     def test_failed_delivery_retries_from_durable_outbox(self):
         with tempfile.TemporaryDirectory() as temp_dir:

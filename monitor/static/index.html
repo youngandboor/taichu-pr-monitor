@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>TaiChu PR Monitor</title>
+    <link rel="icon" href="/brand.png">
+    <link rel="stylesheet" href="/app.css">
+  </head>
+  <body>
+    <!-- Interface icons are from Lucide. See LUCIDE-LICENSE.txt. -->
+    <svg class="icon-sprite" aria-hidden="true">
+      <symbol id="icon-refresh" viewBox="0 0 24 24">
+        <path d="M21 12a9 9 0 0 0-15-6.7L3 8"></path><path d="M3 3v5h5"></path>
+        <path d="M3 12a9 9 0 0 0 15 6.7L21 16"></path><path d="M16 16h5v5"></path>
+      </symbol>
+      <symbol id="icon-search" viewBox="0 0 24 24">
+        <circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.3-4.3"></path>
+      </symbol>
+      <symbol id="icon-external" viewBox="0 0 24 24">
+        <path d="M15 3h6v6"></path><path d="M10 14 21 3"></path>
+        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+      </symbol>
+      <symbol id="icon-alert" viewBox="0 0 24 24">
+        <path d="m21.7 18-8-14a2 2 0 0 0-3.4 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-3"></path>
+        <path d="M12 9v4"></path><path d="M12 17h.01"></path>
+      </symbol>
+      <symbol id="icon-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"></path></symbol>
+      <symbol id="icon-clock" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path>
+      </symbol>
+      <symbol id="icon-inbox" viewBox="0 0 24 24">
+        <path d="M4 4h16v16H4z"></path><path d="M4 13h4l2 3h4l2-3h4"></path>
+      </symbol>
+      <symbol id="icon-chevron" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"></path></symbol>
+      <symbol id="icon-x" viewBox="0 0 24 24"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></symbol>
+      <symbol id="icon-send" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4Z"></path><path d="M22 2 11 13"></path></symbol>
+    </svg>
+
+    <header class="app-header">
+      <div class="header-inner">
+        <div class="brand-lockup">
+          <img src="/brand.png" alt="" width="38" height="38">
+          <div>
+            <div class="brand-title">TaiChu PR Monitor</div>
+            <div class="brand-subtitle">SystemAgentDev / TaiChu</div>
+          </div>
+          <span class="environment-tag">内网</span>
+        </div>
+        <div class="header-actions">
+          <div class="service-state" id="serviceState" data-tone="idle" role="status">
+            <span class="state-dot" aria-hidden="true"></span>
+            <span id="serviceStateText">等待首次扫描</span>
+          </div>
+          <button class="primary-button" id="scanButton" type="button">
+            <svg class="icon" aria-hidden="true"><use href="#icon-refresh"></use></svg>
+            <span>立即扫描</span>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <main class="shell">
+      <section class="overview" aria-labelledby="overviewTitle">
+        <div class="section-heading-row">
+          <div>
+            <h1 id="overviewTitle">运行概览</h1>
+            <p id="scanMeta">正在读取本地状态</p>
+          </div>
+        </div>
+        <dl class="metrics-band" aria-label="监控指标">
+          <div class="metric"><dt>开放 PR</dt><dd id="metricOpen">--</dd></div>
+          <div class="metric" data-tone="danger"><dt>当前失败</dt><dd id="metricFailing">--</dd></div>
+          <div class="metric" data-tone="warning"><dt>待发送</dt><dd id="metricPending">--</dd></div>
+          <div class="metric" data-tone="accent"><dt>发送异常</dt><dd id="metricAttention">--</dd></div>
+        </dl>
+      </section>
+
+      <section class="notice" id="notice" hidden aria-live="polite">
+        <svg class="icon" aria-hidden="true"><use href="#icon-alert"></use></svg>
+        <div><strong id="noticeTitle"></strong><span id="noticeBody"></span></div>
+      </section>
+
+      <section class="workspace" aria-label="监控工作区">
+        <div class="workspace-toolbar">
+          <div class="tabs" role="tablist" aria-label="数据视图">
+            <button id="prTab" class="tab-button active" type="button" role="tab" aria-selected="true" data-view="prs">
+              PR 状态 <span id="prTabCount" class="tab-count">0</span>
+            </button>
+            <button id="outboxTab" class="tab-button" type="button" role="tab" aria-selected="false" data-view="outbox">
+              消息发送 <span id="outboxTabCount" class="tab-count">0</span>
+            </button>
+          </div>
+          <div class="toolbar-controls">
+            <label class="search-field">
+              <svg class="icon" aria-hidden="true"><use href="#icon-search"></use></svg>
+              <span class="sr-only">搜索</span>
+              <input id="searchInput" type="search" placeholder="搜索 PR、标题或提交人" autocomplete="off">
+            </label>
+            <div class="segmented" id="prFilters" aria-label="PR 筛选">
+              <button class="segment active" type="button" data-filter="all" aria-pressed="true">全部</button>
+              <button class="segment" type="button" data-filter="failing" aria-pressed="false">失败</button>
+              <button class="segment" type="button" data-filter="clear" aria-pressed="false">无失败</button>
+            </div>
+            <div class="segmented" id="outboxFilters" aria-label="发送筛选" hidden>
+              <button class="segment active" type="button" data-filter="attention" aria-pressed="true">需处理</button>
+              <button class="segment" type="button" data-filter="pending" aria-pressed="false">待发送</button>
+              <button class="segment" type="button" data-filter="all" aria-pressed="false">全部</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="loadingState" class="loading-state">
+          <span class="spinner" aria-hidden="true"></span><span>读取监控状态</span>
+        </div>
+
+        <div id="prView" role="tabpanel" aria-labelledby="prTab" hidden>
+          <div class="data-header pr-grid" aria-hidden="true">
+            <span>合并请求</span><span>提交人</span><span>当前命令</span><span>关键状态</span><span>最近扫描</span>
+          </div>
+          <div id="prRows" class="data-body"></div>
+        </div>
+
+        <div id="outboxView" role="tabpanel" aria-labelledby="outboxTab" hidden>
+          <div class="data-header outbox-grid" aria-hidden="true">
+            <span>消息</span><span>收件人</span><span>状态</span><span>尝试</span><span>更新时间</span><span></span>
+          </div>
+          <div id="outboxRows" class="data-body"></div>
+        </div>
+      </section>
+    </main>
+
+    <dialog class="detail-dialog" id="prDialog">
+      <div class="dialog-heading">
+        <div><span class="dialog-eyebrow">合并请求</span><h2 id="prDialogTitle"></h2></div>
+        <button class="icon-button" type="button" data-close-dialog="prDialog" aria-label="关闭">
+          <svg class="icon" aria-hidden="true"><use href="#icon-x"></use></svg>
+        </button>
+      </div>
+      <div id="prDialogBody" class="dialog-body"></div>
+      <div class="dialog-actions">
+        <button class="secondary-button" type="button" data-close-dialog="prDialog">关闭</button>
+        <a class="primary-button" id="prDialogLink" href="#" target="_blank" rel="noreferrer">
+          打开 Gitea <svg class="icon" aria-hidden="true"><use href="#icon-external"></use></svg>
+        </a>
+      </div>
+    </dialog>
+
+    <dialog class="confirm-dialog" id="retryDialog">
+      <div class="dialog-heading">
+        <div><span class="dialog-eyebrow">消息发送</span><h2>重新加入发送队列</h2></div>
+        <button class="icon-button" type="button" data-close-dialog="retryDialog" aria-label="关闭">
+          <svg class="icon" aria-hidden="true"><use href="#icon-x"></use></svg>
+        </button>
+      </div>
+      <p id="retryDialogText" class="confirm-copy"></p>
+      <div class="dialog-actions">
+        <button class="secondary-button" type="button" data-close-dialog="retryDialog">取消</button>
+        <button class="danger-button" id="confirmRetryButton" type="button">
+          <svg class="icon" aria-hidden="true"><use href="#icon-send"></use></svg>确认重试
+        </button>
+      </div>
+    </dialog>
+
+    <div class="toast-region" aria-live="polite" aria-atomic="true">
+      <div class="toast" id="toast" role="status"></div>
+    </div>
+    <script src="/app.js" defer></script>
+  </body>
+</html>

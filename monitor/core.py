@@ -72,17 +72,11 @@ def effective_state(state: str, summary: str) -> str:
     """Return the same effective gate state used by GateStateClassifier.java."""
     normalized_state = _value(state).strip().lower()
     lower_summary = _value(summary).lower()
-    if (
-        normalized_state in {"failure", "failed", "error"}
-        or "暂不能入队" in lower_summary
-        or "执行结果：失败" in lower_summary
-        or "执行结果: 失败" in lower_summary
-        or "失败摘要" in lower_summary
-        or "未通过" in lower_summary
-        or "failed" in lower_summary
-        or "failure" in lower_summary
-        or "error" in lower_summary
-    ):
+    if _has_definitive_failure_signal(normalized_state, lower_summary):
+        return "failure"
+    if _has_definitive_success_signal(lower_summary):
+        return "success"
+    if any(marker in lower_summary for marker in ("failed", "failure", "error")):
         return "failure"
     if normalized_state in {"successful", "passed", "passing", "ok"}:
         return "success"
@@ -475,6 +469,48 @@ def _has_success_signal(lower_summary: str) -> bool:
             "当前 head 该门禁已通过",
             "通过",
             "success",
+        )
+    )
+
+
+def _has_definitive_failure_signal(normalized_state: str, lower_summary: str) -> bool:
+    return normalized_state in {"failure", "failed", "error"} or any(
+        marker in lower_summary
+        for marker in (
+            "暂不能入队",
+            "执行结果：失败",
+            "执行结果: 失败",
+            "失败摘要",
+            "未通过",
+            "result: failure",
+            "result：failure",
+            "status: failure",
+            "status：failure",
+            "= `failure`",
+            "build failed",
+            "merge gate failed",
+            "preflight failed",
+            "not passed",
+            "did not pass",
+            "unsatisfied",
+            "not satisfied",
+        )
+    )
+
+
+def _has_definitive_success_signal(lower_summary: str) -> bool:
+    return any(
+        marker in lower_summary
+        for marker in (
+            "执行结果：成功",
+            "执行结果: 成功",
+            "build success",
+            "merge gate success",
+            "preflight: 通过",
+            "preflight：通过",
+            "found no p0/p1",
+            "no p0/p1 principle issues",
+            "当前 head 该门禁已通过",
         )
     )
 

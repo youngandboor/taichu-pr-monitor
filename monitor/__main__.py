@@ -7,9 +7,12 @@ import json
 import logging
 import os
 import pathlib
+import threading
 import time
+import webbrowser
 
 from .core import DEFAULT_POLL_INTERVAL_SECONDS
+from .dashboard import DashboardRuntime, DashboardServer
 from .gitea import (
     DEFAULT_API_BASE,
     DEFAULT_OWNER,
@@ -82,6 +85,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="concurrent Gitea PR fetches (default: 6)",
     )
     parser.add_argument(
+        "--dashboard-host",
+        default="127.0.0.1",
+        help="dashboard bind address (default: 127.0.0.1)",
+    )
+    parser.add_argument(
+        "--dashboard-port",
+        type=positive_int,
+        default=8790,
+        help="dashboard port (default: 8790)",
+    )
+    parser.add_argument(
+        "--no-dashboard",
+        action="store_true",
+        help="disable the local operational dashboard",
+    )
+    parser.add_argument(
+        "--open-dashboard",
+        action="store_true",
+        help="open the dashboard in the default browser at startup",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="print would-be messages instead of invoking welink-cli",
@@ -107,6 +131,9 @@ def main(argv=None) -> int:
     )
     logger = logging.getLogger("taichu-pr-monitor")
     store = MonitorStore(args.state_db)
+    dashboard = None
+    wake_event = threading.Event()
+    runtime = DashboardRuntime(wake_event)
     try:
         if args.list_outbox:
             print(
@@ -146,9 +173,28 @@ def main(argv=None) -> int:
             logger=logger,
         )
 
+        if not args.once and not args.no_dashboard:
+            dashboard = DashboardServer(
+                host=args.dashboard_host,
+                port=args.dashboard_port,
+                state_path=args.state_db,
+                runtime=runtime,
+                logger=logger,
+            )
+            dashboard.start()
+            logger.info("dashboard available at %s", dashboard.url)
+            if args.dashboard_host not in {"127.0.0.1", "localhost", "::1"}:
+                logger.warning("dashboard has no authentication; bind it only to a trusted network")
+            if args.open_dashboard:
+                webbrowser.open(dashboard.url)
+
         while True:
             cycle_started = time.monotonic()
-            report = service.poll_once()
+            runtime.scan_started()
+            try:
+                report = service.poll_once()
+            finally:
+                runtime.scan_finished()
             logger.info(
                 "poll complete: open=%s scanned=%s new_failures=%s sent=%s "
                 "send_failed=%s uncertain=%s unmapped=%s errors=%s",
@@ -164,11 +210,14 @@ def main(argv=None) -> int:
             if args.once:
                 return 1 if report.errors else 0
             elapsed = time.monotonic() - cycle_started
-            time.sleep(max(1.0, args.poll_interval - elapsed))
+            wake_event.wait(max(1.0, args.poll_interval - elapsed))
+            wake_event.clear()
     except KeyboardInterrupt:
         logger.info("monitor stopped")
         return 0
     finally:
+        if dashboard is not None:
+            dashboard.close()
         store.close()
 
 

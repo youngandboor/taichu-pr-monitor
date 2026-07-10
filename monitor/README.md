@@ -11,6 +11,7 @@
 - 同一轮命令的同一失败只发送一次；新的 `/ci build` 或 `/ci merge` 开启新一轮。
 - 同一 PR 在一次轮询发现多个新失败时，合并成一条 WeLink 消息。
 - SQLite 同时保存判定水位和发送 outbox，进程重启后不会重新群发。
+- 持续运行时提供本地运维工作台，集中查看失败 PR、扫描健康度和消息发送状态。
 
 默认直接把 Gitea PR 的 `user.login` 作为 WeLink `--receiver`。如需覆盖少数账号，可传入 JSON 映射表；加 `--require-recipient-map` 可强制所有账号必须出现在映射表中。
 
@@ -55,7 +56,22 @@ python3 -m monitor --once --dry-run --state-db /tmp/taichu-pr-monitor-dry-run.sq
 python3 -m monitor --welink-cli welink-cli
 ```
 
-默认按轮询开始时间每 180 秒启动一轮，并以 6 个并发任务读取 PR，避免开放 PR 较多时扫描本身占满整个周期。可用 `--poll-interval`、`--fetch-workers` 覆盖；`--once` 只执行一轮。
+启动后打开 `http://127.0.0.1:8790`。工作台支持：
+
+- 失败优先的开放 PR 列表、搜索和状态筛选；
+- 最近扫描耗时、错误和停滞提示；
+- WeLink outbox 状态与显式重试；
+- “立即扫描”，不会打断正在执行的一轮扫描。
+
+默认按轮询开始时间每 180 秒启动一轮，并以 6 个并发任务读取 PR，避免开放 PR 较多时扫描本身占满整个周期。可用 `--poll-interval`、`--fetch-workers` 覆盖；`--once` 只执行一轮。常用仪表盘参数：
+
+```bash
+python3 -m monitor --open-dashboard
+python3 -m monitor --dashboard-port 8791
+python3 -m monitor --no-dashboard
+```
+
+仪表盘默认只监听 `127.0.0.1`。如使用 `--dashboard-host 0.0.0.0` 暴露给局域网，页面没有登录认证，只能在可信内网和受控防火墙下使用。
 
 ## 提交人映射
 
@@ -85,6 +101,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 ./monitor/windows/verify_welink.ps1 -Send -Receiver <W3 account>
 python -m unittest discover -s monitor/tests -v
 python -m monitor --once
+python -m monitor --open-dashboard
 ```
 
 如果 npm 安装得到的是 `welink-cli.cmd`，Python 适配器会自动通过 `invoke_welink.ps1` 调用，并以 Base64 传递消息正文；不会把 PR 评论拼接成 shell 命令。
