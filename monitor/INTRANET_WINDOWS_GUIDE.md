@@ -285,6 +285,7 @@ py -3 -m monitor --strict-recipients --open-dashboard
 | 端口 `8790` 被占用 | 用 `py -3 -m monitor --dashboard-port 8791 --open-dashboard` |
 | 消息状态为 `failed` | CLI 返回非零退出码，程序会在下一轮重试，默认最多 3 次 |
 | 消息状态为 `uncertain` | CLI 调用超时，程序为避免重复骚扰不会自动重发；确认 WeLink 是否收到后，再在工作台手工重试 |
+| 从 `ba9f5c3` 升级后有旧 `pending` | 不要删除 SQLite；最新版本会从仍开放的 PR 回填 W3。先停止旧进程、拉取 `main`，再按第 8 至 10 步启动 |
 | 给自己发送失败 | WeLink 不支持自发消息；配置发送账号和备用接收人，或改用不提交 PR 的专用发送账号 |
 | 发给了错误的人 | 立即按 `Ctrl+C` 停止，核对 Gitea 登录号和 W3 账号，必要时使用映射表 |
 | 新失败没有通知 | 确认它发生在首次基线之后、属于当前 head 和五个关键门禁，并检查工作台 outbox |

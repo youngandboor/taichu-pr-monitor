@@ -61,8 +61,10 @@ class RecipientDirectory:
         ):
             raise ValueError("WeLink self-fallback receiver must differ from sender account")
         self.mapping: Dict[str, str] = {}
+        self.inferred: Dict[str, str] = {}
 
     def refresh(self) -> None:
+        self.inferred = {}
         if self.path is None:
             self.mapping = {}
             return
@@ -82,11 +84,23 @@ class RecipientDirectory:
                 mapping[author.strip()] = receiver.strip()
         self.mapping = mapping
 
+    def remember(self, author: str, receiver: str) -> None:
+        author = (author or "").strip()
+        receiver = (receiver or "").strip()
+        if not author or not receiver:
+            return
+        existing = self.inferred.get(author)
+        if existing and existing.casefold() != receiver.casefold():
+            raise ValueError(f"conflicting derived W3 recipients for Gitea author {author}")
+        self.inferred[author] = receiver
+
     def resolve(self, author: str, inferred_receiver: str = "") -> Optional[str]:
         if author in self.mapping:
             receiver = self.mapping[author]
         elif inferred_receiver:
             receiver = inferred_receiver
+        elif author in self.inferred:
+            receiver = self.inferred[author]
         else:
             receiver = author if self.direct and author else None
         if (
@@ -169,6 +183,7 @@ class MonitorService:
                 number = _pr_number(pr)
                 try:
                     snapshot = future.result()
+                    self.recipients.remember(snapshot.author, snapshot.author_w3)
                     if recipients_ready and not self.recipients.resolve(
                         snapshot.author,
                         snapshot.author_w3,

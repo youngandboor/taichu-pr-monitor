@@ -68,6 +68,7 @@ class DashboardStoreTest(unittest.TestCase):
                 self.assertEqual(106, payload["metrics"]["open_prs"])
                 self.assertEqual(1, payload["metrics"]["failing_prs"])
                 self.assertEqual(1, payload["metrics"]["delivery_attention"])
+                self.assertEqual(1, payload["metrics"]["pending_delivery"])
                 self.assertEqual(42, payload["pull_requests"][0]["number"])
                 self.assertEqual("uncertain", payload["outbox"][0]["status"])
 
@@ -136,6 +137,7 @@ class DashboardServerTest(unittest.TestCase):
 
         self.assertIn("TaiChu PR Monitor", html)
         self.assertIn("立即扫描", html)
+        self.assertIn("待处理", html)
         self.assertIn("default-src 'self'", content_security_policy)
         self.assertEqual(0, payload["metrics"]["open_prs"])
 

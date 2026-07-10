@@ -158,4 +158,8 @@ python3 -m monitor --list-outbox
 
 状态含义：`sent` 已送达调用成功，`failed` 等待下一轮重试，`dead` 已耗尽重试，`uncertain` 调用超时且不自动重发，`unmapped` 找不到收件人。
 
+从 `ba9f5c3` 等旧版本升级时不要删除状态库。旧 outbox 记录可能没有收件人字段；新版本会从仍然开放的当前 PR 作者信息回填 W3 后继续发送。若对应 PR 已关闭，则需要用 `recipients.json` 为该 Gitea 登录名提供一次覆盖。
+
+工作台“待处理”包含尚未尝试、发送失败、重试耗尽、结果不确定和未映射记录；应以消息行上的精确状态和 `last_error` 为准。
+
 仓库不会提交 token、真实账号映射、SQLite 状态库、WeLink 登录信息或内部安装文档。

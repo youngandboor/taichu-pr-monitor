@@ -4,7 +4,7 @@ import unittest
 
 from monitor.core import TrackerState
 from monitor.service import MonitorService, RecipientDirectory
-from monitor.state import MonitorStore
+from monitor.state import MonitorStore, OutboxEvent
 from monitor.welink import DeliveryResult
 
 
@@ -177,6 +177,35 @@ class MonitorServiceTest(unittest.TestCase):
                 self.assertEqual(1, report.delivered)
                 self.assertEqual("y00000002", sender.calls[0][0])
                 self.assertEqual("y00000002", store.list_outbox()[0].receiver)
+
+    def test_legacy_pending_record_uses_w3_discovered_from_current_pr(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = FakeGiteaClient()
+            client.user = {
+                "login": "w00123",
+                "full_name": "杨示例 00000001",
+            }
+            sender = SequenceSender(["success"])
+            store = MonitorStore(pathlib.Path(temp_dir) / "state.sqlite3")
+            store.apply_poll(
+                7,
+                TrackerState.empty(),
+                OutboxEvent("legacy-event", 7, "w00123", "legacy message"),
+            )
+            service = MonitorService(
+                client=client,
+                store=store,
+                sender=sender,
+                recipients=RecipientDirectory(direct=False),
+                clock=Clock("2026-07-10T10:05:00+08:00"),
+            )
+
+            with store:
+                report = service.poll_once()
+
+                self.assertEqual(1, report.delivered)
+                self.assertEqual("y00000001", sender.calls[0][0])
+                self.assertEqual("sent", store.list_outbox()[0].status)
 
     def test_strict_recipient_mode_reports_missing_w3_during_baseline(self):
         with tempfile.TemporaryDirectory() as temp_dir:
