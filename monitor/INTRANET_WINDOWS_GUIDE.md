@@ -10,17 +10,18 @@
 - 只识别五个关键门禁的当前失败；
 - 第一次运行只建立基线，不补发历史问题；
 - 新问题通过 WeLink 私聊发送给 PR 提交人；
-- Gitea 登录号默认直接作为 WeLink W3 账号；
+- Gitea 登录号通过本地映射表对应到 `y` 开头的 WeLink W3 账号；
 - 浏览器可在 `http://127.0.0.1:8790` 查看运行状态和发送记录。
 
 ## 开始前准备
 
-先确认这台 Windows 电脑满足下面四项：
+先确认这台 Windows 电脑满足下面五项：
 
 1. 能打开 `https://taichu.fun/gitea/SystemAgentDev/TaiChu/pulls`；
 2. 能取得本仓库代码；推荐直接访问 GitHub，也可以使用公司允许的文件摆渡方式；
 3. 已安装并登录 WeLink，且内部文档要求的 `welink-cli` 已配置完成；
 4. 有一个能读取 `SystemAgentDev/TaiChu` 的 Gitea Personal Access Token（PAT）。
+5. 有一位知情同事可接收 WeLink 冒烟消息；`welink-cli` 登录账号不能给自己发消息。
 
 不要把 PAT、真实 W3 账号、`recipients.json` 或本地 SQLite 文件发到 GitHub。
 
@@ -102,16 +103,16 @@ welink-cli: C:\...\welink-cli.cmd
 Command discovery passed.
 ```
 
-然后给自己发一条冒烟测试消息。只把引号里的内容改成自己的 W3 账号：
+然后给一位知情同事发冒烟测试消息。收件人必须与当前 `welink-cli` 登录账号不同：
 
 ```powershell
-.\monitor\windows\verify_welink.ps1 -Send -Receiver "自己的W3账号"
+.\monitor\windows\verify_welink.ps1 -Send -Receiver "另一位知情同事的W3账号"
 ```
 
 必须同时满足：
 
 1. PowerShell 最后显示 `send-to-user returned exit code 0`；
-2. 自己的 WeLink 收到一条 `TaiChu PR Monitor welink-cli smoke test` 消息。
+2. 该同事的 WeLink 收到一条 `TaiChu PR Monitor welink-cli smoke test` 消息。
 
 这一步失败时不要启动正式监控。先按内部文档修复 WeLink CLI 登录、账号或网络问题。
 
@@ -163,12 +164,40 @@ poll complete: open=... scanned=... new_failures=0 sent=0 ... errors=0
 
 重点看 `errors=0`。如果是 `401`、`403` 或无法连接 Gitea，先检查 PAT 和内网访问。
 
-## 第 8 步：建立正式基线
+## 第 8 步：配置收件人和自发兜底
+
+复制示例映射并打开编辑：
+
+```powershell
+Copy-Item .\monitor\recipients.example.json .\monitor\recipients.json
+notepad .\monitor\recipients.json
+```
+
+键是 Gitea 登录号，值是 `y` 开头的 W3 账号。左右两边都必须保留英文双引号：
+
+```json
+{
+  "gitea-login": "y00000000"
+}
+```
+
+WeLink 不支持当前登录账号给自己发私聊，因此还要设置当前发送账号和备用接收人：
+
+```powershell
+$env:TAICHU_WELINK_SENDER = "y发送账号"
+$env:TAICHU_WELINK_SELF_FALLBACK = "y备用接收账号"
+```
+
+如果映射后的目标等于发送账号，监控会自动改发给备用接收人。两者必须同时设置且不能相同。
+
+`monitor\recipients.json` 已被 Git 忽略，不要强制提交，也不要通过非批准渠道传播。
+
+## 第 9 步：建立正式基线
 
 只在前面步骤全部通过后执行：
 
 ```powershell
-py -3 -m monitor --once
+py -3 -m monitor --once --recipients .\monitor\recipients.json --require-recipient-map
 ```
 
 这是正式状态库的第一次扫描。它会记录当前已有问题作为基线，不会把全部历史失败群发出去。
@@ -181,10 +210,10 @@ monitor\.state\monitor.sqlite3
 
 不要删除、覆盖或复制别的设备上的这个文件。它负责防止相同问题重复发送。
 
-## 第 9 步：启动持续监控
+## 第 10 步：启动持续监控
 
 ```powershell
-py -3 -m monitor --open-dashboard
+py -3 -m monitor --recipients .\monitor\recipients.json --require-recipient-map --open-dashboard
 ```
 
 正常情况下浏览器会自动打开：
@@ -203,15 +232,15 @@ dashboard available at http://127.0.0.1:8790
 
 必须保持 PowerShell 窗口开启。关闭窗口、退出 Python、电脑睡眠或关机都会停止监控。需要停止时回到 PowerShell，按一次 `Ctrl+C`。
 
-## 第 10 步：做一次真实端到端验收
+## 第 11 步：做一次真实端到端验收
 
-建议用自己的开放 PR，确保 PR 提交人的 Gitea 登录号就是自己的 WeLink W3 账号。
+建议使用一位知情同事的开放 PR，或先配置下方“发送给自己时的备用接收人”。最终收件人必须与 `welink-cli` 登录账号不同。
 
 1. 先确认持续监控已经完成至少一轮，工作台显示最近扫描成功；
-2. 在自己的 PR 触发新的 `/ci build` 或 `/ci merge`；
+2. 在约定的测试 PR 触发新的 `/ci build` 或 `/ci merge`；
 3. 让当前 head 上的五个关键门禁之一产生一个新失败；
 4. 等待一个轮询周期加扫描时间，通常不超过 4 分钟；
-5. 确认自己收到一条包含 PR 编号、标题和失败摘要的 WeLink 消息；
+5. 确认对应提交人或备用接收人收到包含 PR 编号、标题和失败摘要的 WeLink 消息；
 6. 再等待一轮，确认同一问题不会重复发送。
 
 只有基线之后产生的新失败才应该通知。旧 head、旧命令轮次和历史评论不会补发。
@@ -237,38 +266,20 @@ $env:TAICHU_GITEA_TOKEN = $gitea.GetNetworkCredential().Password
 Remove-Variable gitea
 ```
 
+设置自发兜底路由：
+
+```powershell
+$env:TAICHU_WELINK_SENDER = "y发送账号"
+$env:TAICHU_WELINK_SELF_FALLBACK = "y备用接收账号"
+```
+
 启动：
 
 ```powershell
-py -3 -m monitor --open-dashboard
+py -3 -m monitor --recipients .\monitor\recipients.json --require-recipient-map --open-dashboard
 ```
 
 更新代码不会删除 `monitor\.state\monitor.sqlite3`，因此已经发送过的问题不会因为正常升级而重新通知。
-
-## 提交人账号不能直接对应时
-
-默认规则是：Gitea 登录号直接作为 WeLink W3 账号。只有少数账号不一致时才需要映射表。
-
-```powershell
-Copy-Item .\monitor\recipients.example.json .\monitor\recipients.json
-notepad .\monitor\recipients.json
-```
-
-按下面格式填写，左右两边都必须保留英文双引号：
-
-```json
-{
-  "gitea-login": "welink-w3-account"
-}
-```
-
-然后这样启动：
-
-```powershell
-py -3 -m monitor --recipients .\monitor\recipients.json --open-dashboard
-```
-
-`monitor\recipients.json` 已被 Git 忽略，不要强制提交。
 
 ## 常见故障
 
@@ -283,14 +294,32 @@ py -3 -m monitor --recipients .\monitor\recipients.json --open-dashboard
 | 端口 `8790` 被占用 | 用 `py -3 -m monitor --dashboard-port 8791 --open-dashboard` |
 | 消息状态为 `failed` | CLI 返回非零退出码，程序会在下一轮重试，默认最多 3 次 |
 | 消息状态为 `uncertain` | CLI 调用超时，程序为避免重复骚扰不会自动重发；确认 WeLink 是否收到后，再在工作台手工重试 |
+| 给自己发送失败 | WeLink 不支持自发消息；配置发送账号和备用接收人，或改用不提交 PR 的专用发送账号 |
 | 发给了错误的人 | 立即按 `Ctrl+C` 停止，核对 Gitea 登录号和 W3 账号，必要时使用映射表 |
 | 新失败没有通知 | 确认它发生在首次基线之后、属于当前 head 和五个关键门禁，并检查工作台 outbox |
 | `git pull` 提示本地修改冲突 | 不要执行 `git reset --hard`；保留现场并联系维护者 |
 
-Gitea API 超时时，先检查 443 端口：
+Gitea API 超时时，可以先检查直连 443 端口：
 
 ```powershell
 Test-NetConnection taichu.fun -Port 443
+```
+
+这个命令不经过浏览器代理。它失败但浏览器能打开 Gitea 时，通常是浏览器使用了公司代理或 PAC，而 Python 正在直连。查看 Windows 为 Gitea 解析出的代理：
+
+```powershell
+$target = [Uri]"https://taichu.fun/gitea/api/v1/version"
+$systemProxy = [System.Net.WebRequest]::DefaultWebProxy
+$proxyUrl = $systemProxy.GetProxy($target).AbsoluteUri
+"Proxy: $proxyUrl"
+"Bypassed: $($systemProxy.IsBypassed($target))"
+```
+
+如果 `Proxy` 与目标地址不同，把该代理交给当前 PowerShell 中的 Python：
+
+```powershell
+$env:HTTPS_PROXY = $proxyUrl
+$env:HTTP_PROXY = $proxyUrl
 ```
 
 再用当前 PAT 直接读取一个开放 PR：
@@ -325,7 +354,7 @@ py -3 -m monitor --list-outbox > "$HOME\Desktop\taichu-monitor-outbox.json"
 
 - [ ] Gitea PR 页面可以访问；
 - [ ] `git`、Python 3、`welink-cli` 三项检查通过；
-- [ ] 给自己的 WeLink 冒烟消息发送成功；
+- [ ] 给另一位知情同事的 WeLink 冒烟消息发送成功；
 - [ ] 自动测试最终显示 `OK`；
 - [ ] dry-run 扫描显示 `errors=0`；
 - [ ] 正式基线已完成；
