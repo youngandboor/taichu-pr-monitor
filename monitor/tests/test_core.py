@@ -6,6 +6,7 @@ from monitor.core import (
     PrSnapshot,
     TrackerState,
     build_pr_snapshot,
+    derive_w3_account,
     effective_state,
     notification_text,
     poll_tracker,
@@ -13,6 +14,37 @@ from monitor.core import (
 
 
 class GateLogicTest(unittest.TestCase):
+    def test_w3_account_is_derived_from_surname_initial_and_employee_number(self):
+        user = {
+            "full_name": "杨示例 00123456",
+            "email": "unrelated-prefix.example@company.test",
+        }
+
+        self.assertEqual("y00123456", derive_w3_account(user))
+
+    def test_embedded_w3_account_wins_without_surname_conversion(self):
+        self.assertEqual(
+            "z00123456",
+            derive_w3_account({"full_name": "示例用户 z00123456"}),
+        )
+
+    def test_surname_initial_does_not_trust_an_unrelated_email_prefix(self):
+        user = {
+            "full_name": "刘示例 00123456",
+            "email": "hwxx.example@company.test",
+        }
+
+        self.assertEqual("l00123456", derive_w3_account(user))
+
+    def test_w3_account_derivation_fails_closed_when_identity_data_is_incomplete(self):
+        self.assertEqual("", derive_w3_account({"full_name": "杨示例"}))
+        self.assertEqual(
+            "",
+            derive_w3_account(
+                {"full_name": "龘示例 00123456", "email": "example@company.test"}
+            ),
+        )
+
     def test_failure_text_overrides_success_state_like_android(self):
         summary = "TaiChu merge gate: 执行结果：失败，Cloud Preflight 未通过"
 
@@ -36,7 +68,11 @@ class GateLogicTest(unittest.TestCase):
             "number": 1222,
             "title": "Fix current failures",
             "html_url": "https://taichu.fun/gitea/SystemAgentDev/TaiChu/pulls/1222",
-            "user": {"login": "w00123"},
+            "user": {
+                "login": "w00123",
+                "full_name": "杨示例 00123456",
+                "email": "unrelated-prefix.example@company.test",
+            },
             "head": {"sha": "abcdef1234567890"},
         }
         statuses = [
@@ -93,6 +129,7 @@ class GateLogicTest(unittest.TestCase):
         )
 
         self.assertEqual("w00123", snapshot.author)
+        self.assertEqual("y00123456", snapshot.author_w3)
         self.assertEqual("/ci build", snapshot.latest_ci_command)
         self.assertEqual(
             "1222:/ci build:2026-07-10T10:00:00+08:00:9",
