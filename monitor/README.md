@@ -1,0 +1,109 @@
+# 全开放 PR WeLink 监控
+
+这个服务每 3 分钟读取 `SystemAgentDev/TaiChu` 的全部开放 PR，沿用 Android 端的五门禁判定和通知去重规则，将新失败摘要发送给 PR 提交人。
+
+## 当前行为
+
+- 只监控 `https://taichu.fun/gitea/SystemAgentDev/TaiChu/pulls` 下的开放 PR。
+- 只把五个关键门禁中的明确失败视为问题。
+- 忽略旧 head、队列状态、构建耗时评论和旧命令之前的失败。
+- 第一次看到某个 PR 时只建立基线，不发送已有历史失败。
+- 同一轮命令的同一失败只发送一次；新的 `/ci build` 或 `/ci merge` 开启新一轮。
+- 同一 PR 在一次轮询发现多个新失败时，合并成一条 WeLink 消息。
+- SQLite 同时保存判定水位和发送 outbox，进程重启后不会重新群发。
+
+默认直接把 Gitea PR 的 `user.login` 作为 WeLink `--receiver`。如需覆盖少数账号，可传入 JSON 映射表；加 `--require-recipient-map` 可强制所有账号必须出现在映射表中。
+
+## 本地测试
+
+不依赖 Gitea、内网或真实 WeLink：
+
+```bash
+cd /path/to/taichu-pr-monitor
+python3 -m unittest discover -s monitor/tests -v
+```
+
+测试使用 `fake_welink_cli.py` 分别模拟：
+
+- 退出码 `0`：发送成功；
+- 非零退出码：发送失败，下一轮重试，默认最多 3 次；
+- 超时：结果记为 `uncertain`，不自动重试，避免实际已送达时重复骚扰。
+
+适配器调用严格采用文档中的参数结构：
+
+```text
+welink-cli im send-to-user --receiver <W3 account> --text <message>
+```
+
+## Mac 开发运行
+
+Gitea 凭据按以下顺序读取，均不会写入仓库：
+
+1. `TAICHU_GITEA_TOKEN` 或 `GITEA_TOKEN`；
+2. `TAICHU_GITEA_USERNAME` + `TAICHU_GITEA_PASSWORD`；
+3. `git credential fill`。
+
+先用临时状态库做一次只读扫描：
+
+```bash
+python3 -m monitor --once --dry-run --state-db /tmp/taichu-pr-monitor-dry-run.sqlite3
+```
+
+真实守护运行只应放在能够访问内网并安装了 WeLink PC/CLI 的设备：
+
+```bash
+python3 -m monitor --welink-cli welink-cli
+```
+
+默认按轮询开始时间每 180 秒启动一轮，并以 6 个并发任务读取 PR，避免开放 PR 较多时扫描本身占满整个周期。可用 `--poll-interval`、`--fetch-workers` 覆盖；`--once` 只执行一轮。
+
+## 提交人映射
+
+默认无需映射文件，提交人的 Gitea 登录号会原样传给 WeLink。覆盖映射示例见 `recipients.example.json`：
+
+```json
+{
+  "gitea-login-example": "welink-user-example"
+}
+```
+
+本地真实文件建议命名为 `monitor/recipients.json`，该文件已被 Git 忽略：
+
+```bash
+python3 -m monitor --recipients monitor/recipients.json
+```
+
+账号必须用 JSON 字符串，避免工号前导零丢失。
+
+## 内网 Windows 验证
+
+在安装并按内部文档登录好 `welink-cli` 后：
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+./monitor/windows/verify_welink.ps1
+./monitor/windows/verify_welink.ps1 -Send -Receiver <W3 account>
+python -m unittest discover -s monitor/tests -v
+python -m monitor --once
+```
+
+如果 npm 安装得到的是 `welink-cli.cmd`，Python 适配器会自动通过 `invoke_welink.ps1` 调用，并以 Base64 传递消息正文；不会把 PR 评论拼接成 shell 命令。
+
+真实设备验收时重点确认：
+
+1. `send-to-user` 成功时退出码是否稳定为 `0`；
+2. 登录过期、收件人不存在和网络失败时是否返回非零退出码；
+3. CLI 卡住时进程能否在超时后被终止；
+4. WeLink 退出、锁屏和长时间运行后的登录刷新行为。
+
+## 状态与排障
+
+默认数据库为 `monitor/.state/monitor.sqlite3`。查看发送结果：
+
+```bash
+python3 -m monitor --list-outbox
+```
+
+状态含义：`sent` 已送达调用成功，`failed` 等待下一轮重试，`dead` 已耗尽重试，`uncertain` 调用超时且不自动重发，`unmapped` 找不到收件人。
+
+仓库不会提交 token、真实账号映射、SQLite 状态库、WeLink 登录信息或内部安装文档。
