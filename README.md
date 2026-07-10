@@ -56,7 +56,7 @@ python3 -m monitor --once --dry-run --state-db /tmp/taichu-pr-monitor-dry-run.sq
 python3 -m monitor --dry-run --open-dashboard
 ```
 
-详细说明见 [`monitor/README.md`](monitor/README.md)。
+第一次在内网 Windows 部署时，请直接按照 [`内网 Windows 使用指南（零基础一步一步版）`](monitor/INTRANET_WINDOWS_GUIDE.md) 操作。设计与命令行细节见 [`monitor/README.md`](monitor/README.md)。
 
 ## 安全边界
 
