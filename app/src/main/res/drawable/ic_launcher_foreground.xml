@@ -1,0 +1,7 @@
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:drawable="@drawable/gitea_launcher_mark"
+        android:gravity="center"
+        android:width="74dp"
+        android:height="74dp" />
+</layer-list>

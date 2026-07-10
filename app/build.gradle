@@ -1,0 +1,56 @@
+apply plugin: "com.android.application"
+
+android {
+    namespace "fun.taichu.prmonitor"
+    compileSdk 35
+
+    def releaseStoreFile = System.getenv("PRMONITOR_STORE_FILE")
+    def releaseStorePassword = System.getenv("PRMONITOR_STORE_PASSWORD")
+    def releaseKeyAlias = System.getenv("PRMONITOR_KEY_ALIAS")
+    def releaseKeyPassword = System.getenv("PRMONITOR_KEY_PASSWORD")
+    def hasReleaseSigning = releaseStoreFile && releaseStorePassword && releaseKeyAlias && releaseKeyPassword
+
+    defaultConfig {
+        applicationId "fun.taichu.prmonitor"
+        minSdk 26
+        targetSdk 35
+        versionCode 1
+        versionName "0.1.0"
+    }
+
+    signingConfigs {
+        release {
+            if (hasReleaseSigning) {
+                storeFile file(releaseStoreFile)
+                storePassword releaseStorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            shrinkResources false
+            if (hasReleaseSigning) {
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+
+    applicationVariants.all { variant ->
+        variant.outputs.all {
+            outputFileName = "taichu_pr_monitor-${variant.buildType.name}.apk"
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    testImplementation "junit:junit:4.13.2"
+}
