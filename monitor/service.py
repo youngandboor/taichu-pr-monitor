@@ -14,6 +14,7 @@ from typing import Callable, Dict, List, Optional
 
 from .core import (
     PrSnapshot,
+    build_success_key,
     build_pr_snapshot,
     failure_key,
     notification_text,
@@ -191,7 +192,11 @@ class MonitorService:
                         missing_recipient_authors.add(snapshot.author)
                     current = self.store.get_tracker(snapshot.number)
                     result = poll_tracker(current, snapshot)
-                    event = self._event_for(snapshot, result.notifications)
+                    event = self._event_for(
+                        snapshot,
+                        result.notifications,
+                        result.build_success,
+                    )
                     self.store.apply_poll(
                         snapshot.number,
                         result.state,
@@ -199,7 +204,9 @@ class MonitorService:
                         snapshot=snapshot,
                     )
                     report.scanned_prs += 1
-                    report.new_notifications += len(result.notifications)
+                    report.new_notifications += len(result.notifications) + int(
+                        result.build_success
+                    )
                 except Exception as error:
                     message = f"PR #{number or '?'} scan failed: {error}"
                     report.errors.append(message)
@@ -256,10 +263,13 @@ class MonitorService:
         self,
         snapshot: PrSnapshot,
         failures,
+        build_success: bool = False,
     ) -> Optional[OutboxEvent]:
-        if not failures:
+        if not failures and not build_success:
             return None
         keys = sorted(failure_key(snapshot, failure) for failure in failures)
+        if build_success:
+            keys.append(build_success_key(snapshot))
         digest = hashlib.sha256(
             (str(snapshot.number) + "\0" + "\0".join(keys)).encode("utf-8")
         ).hexdigest()
@@ -267,7 +277,7 @@ class MonitorService:
             event_key=digest,
             pr_number=snapshot.number,
             author=snapshot.author,
-            message=format_message(snapshot, failures),
+            message=format_message(snapshot, failures, build_success=build_success),
             receiver_hint=snapshot.author_w3,
         )
 
@@ -320,15 +330,26 @@ class MonitorService:
             self.logger.error("WeLink delivery failed for outbox #%s", record.id)
 
 
-def format_message(snapshot: PrSnapshot, failures) -> str:
+def format_message(snapshot: PrSnapshot, failures, build_success: bool = False) -> str:
+    headline = (
+        f"[TaiChu PR #{snapshot.number}] CI Build 已通过"
+        if build_success
+        else f"[TaiChu PR #{snapshot.number}] 发现 {len(failures)} 个新问题"
+    )
     lines = [
-        f"[TaiChu PR #{snapshot.number}] 发现 {len(failures)} 个新问题",
+        headline,
         f"标题：{snapshot.title or '(无标题)'}",
         f"提交人：{snapshot.author}",
         f"Head：{snapshot.head_sha[:7]}",
     ]
+    if build_success and snapshot.pr_build_summary:
+        lines.append(f"结果：{notification_text(snapshot.pr_build_summary)}")
+    if build_success and failures:
+        lines.append(f"同时发现 {len(failures)} 个新问题：")
     for failure in failures:
         lines.append(f"- {failure.context}：{notification_text(failure.summary)}")
+    if build_success:
+        lines.append("下一步：打开 PR，确认后评论 /ci merge")
     lines.append(f"查看：{snapshot.url}")
     return "\n".join(lines)
 

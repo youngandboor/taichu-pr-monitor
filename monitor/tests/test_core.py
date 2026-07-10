@@ -131,6 +131,9 @@ class GateLogicTest(unittest.TestCase):
         self.assertEqual("w00123", snapshot.author)
         self.assertEqual("y00123456", snapshot.author_w3)
         self.assertEqual("/ci build", snapshot.latest_ci_command)
+        self.assertEqual("success", snapshot.pr_build_state)
+        self.assertEqual("2026-07-10T10:04:00+08:00", snapshot.pr_build_updated_at)
+        self.assertEqual("build success", snapshot.pr_build_summary)
         self.assertEqual(
             "1222:/ci build:2026-07-10T10:00:00+08:00:9",
             snapshot.latest_ci_command_key,
@@ -155,19 +158,123 @@ class GateLogicTest(unittest.TestCase):
 
 
 class TrackerTest(unittest.TestCase):
-    def snapshot(self, *, scanned_at, command_key="cmd-1", command_at="2026-07-10T10:00:00+08:00", failures=()):
+    def snapshot(
+        self,
+        *,
+        scanned_at,
+        command_key="cmd-1",
+        command="/ci build",
+        command_at="2026-07-10T10:00:00+08:00",
+        failures=(),
+        build_state="",
+        build_at="",
+        build_summary="",
+    ):
         return PrSnapshot(
             number=7,
             title="PR title",
             author="w00123",
             head_sha="abcdef123456",
             url="https://taichu.fun/gitea/SystemAgentDev/TaiChu/pulls/7",
-            latest_ci_command="/ci build" if command_key else "",
+            latest_ci_command=command if command_key else "",
             latest_ci_command_at=command_at if command_key else "",
             latest_ci_command_key=command_key,
             scanned_at=scanned_at,
             failures=tuple(failures),
+            pr_build_state=build_state,
+            pr_build_updated_at=build_at,
+            pr_build_summary=build_summary,
         )
+
+    def test_first_poll_baselines_historical_build_success(self):
+        snapshot = self.snapshot(
+            scanned_at="2026-07-10T10:05:00+08:00",
+            build_state="success",
+            build_at="2026-07-10T10:02:00+08:00",
+            build_summary="build success",
+        )
+
+        result = poll_tracker(TrackerState.empty(), snapshot)
+
+        self.assertFalse(result.build_success)
+        self.assertTrue(result.state.initialized)
+        self.assertEqual(1, len(result.state.notified_failure_keys))
+
+    def test_new_build_success_after_watermark_alerts_once(self):
+        baseline = poll_tracker(
+            TrackerState.empty(),
+            self.snapshot(
+                scanned_at="2026-07-10T10:05:00+08:00",
+                build_state="pending",
+                build_at="2026-07-10T10:04:00+08:00",
+            ),
+        ).state
+        changed = self.snapshot(
+            scanned_at="2026-07-10T10:08:00+08:00",
+            build_state="success",
+            build_at="2026-07-10T10:06:00+08:00",
+            build_summary="build success",
+        )
+
+        first = poll_tracker(baseline, changed)
+        second = poll_tracker(first.state, changed)
+
+        self.assertTrue(first.build_success)
+        self.assertFalse(second.build_success)
+
+    def test_parser_upgrade_does_not_announce_old_build_success(self):
+        legacy_state = TrackerState(
+            "cmd-1",
+            frozenset(),
+            True,
+            "2026-07-10T10:05:00+08:00",
+        )
+        historical_success = self.snapshot(
+            scanned_at="2026-07-10T10:08:00+08:00",
+            build_state="success",
+            build_at="2026-07-10T10:02:00+08:00",
+            build_summary="historical build success",
+        )
+
+        result = poll_tracker(legacy_state, historical_success)
+
+        self.assertFalse(result.build_success)
+        self.assertEqual(1, len(result.state.notified_failure_keys))
+
+    def test_build_success_before_latest_build_command_is_ignored(self):
+        baseline = poll_tracker(
+            TrackerState.empty(),
+            self.snapshot(scanned_at="2026-07-10T10:05:00+08:00"),
+        ).state
+        changed = self.snapshot(
+            scanned_at="2026-07-10T10:12:00+08:00",
+            command_key="cmd-2",
+            command_at="2026-07-10T10:10:00+08:00",
+            build_state="success",
+            build_at="2026-07-10T10:09:00+08:00",
+        )
+
+        result = poll_tracker(baseline, changed)
+
+        self.assertFalse(result.build_success)
+
+    def test_build_success_is_not_announced_for_latest_merge_command(self):
+        baseline = poll_tracker(
+            TrackerState.empty(),
+            self.snapshot(scanned_at="2026-07-10T10:05:00+08:00"),
+        ).state
+        changed = self.snapshot(
+            scanned_at="2026-07-10T10:08:00+08:00",
+            command="/ci merge",
+            command_key="merge-1",
+            command_at="2026-07-10T10:06:00+08:00",
+            build_state="success",
+            build_at="2026-07-10T10:07:00+08:00",
+        )
+
+        result = poll_tracker(baseline, changed)
+
+        self.assertFalse(result.build_success)
 
     def test_first_poll_builds_baseline_without_historical_alerts(self):
         snapshot = self.snapshot(

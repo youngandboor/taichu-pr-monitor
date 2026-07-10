@@ -1,6 +1,6 @@
 # 全开放 PR WeLink 监控
 
-这个服务每 3 分钟读取 `SystemAgentDev/TaiChu` 的全部开放 PR，沿用 Android 端的五门禁判定和通知去重规则，将新失败摘要发送给 PR 提交人。
+这个服务每 3 分钟读取 `SystemAgentDev/TaiChu` 的全部开放 PR，沿用 Android 端的五门禁判定和通知去重规则，将新失败摘要与 CI Build 成功消息发送给 PR 提交人。
 
 第一次在内网 Windows 部署时，请直接按照 [`INTRANET_WINDOWS_GUIDE.md`](INTRANET_WINDOWS_GUIDE.md) 的零基础步骤执行，不需要先读完本文。
 
@@ -9,9 +9,11 @@
 - 只监控 `https://taichu.fun/gitea/SystemAgentDev/TaiChu/pulls` 下的开放 PR。
 - 只把五个关键门禁中的明确失败视为问题。
 - 忽略旧 head、队列状态、构建耗时评论和旧命令之前的失败。
-- 第一次看到某个 PR 时只建立基线，不发送已有历史失败。
+- 第一次看到某个 PR 时只建立基线，不发送已有历史失败或历史成功。
 - 同一轮命令的同一失败只发送一次；新的 `/ci build` 或 `/ci merge` 开启新一轮。
 - 同一 PR 在一次轮询发现多个新失败时，合并成一条 WeLink 消息。
+- 当前 head 的最新 `/ci build` 轮次成功后发送一次；重复扫描不重发，新的 `/ci build` 成功后可再次通知。
+- 成功消息提示用户打开 PR，确认后手工评论 `/ci merge`；不读取 WeLink 回复。
 - SQLite 同时保存判定水位和发送 outbox，进程重启后不会重新群发。
 - 持续运行时提供本地运维工作台，集中查看失败 PR、扫描健康度和消息发送状态。
 
