@@ -278,6 +278,7 @@ py -3 -m monitor --recipients .\monitor\recipients.json --open-dashboard
 | `welink-cli` 无法识别 | 按内部文档安装和登录 CLI，再运行第 4 步 |
 | `401 Unauthorized` | PAT 无效、过期或权限不足；重新创建 PAT，再执行第 5 步 |
 | `403 Forbidden` | 当前账号无权读取仓库或 PAT 权限不足 |
+| `failed to list open pull requests`、`urlopen error timed out` | 先执行下方 Gitea API 连通性检查；更新到最新 `main` 后可增大超时并重试 |
 | `errors` 不为 `0` | 在工作台查看扫描错误；先检查 Gitea、内网和 PAT |
 | 端口 `8790` 被占用 | 用 `py -3 -m monitor --dashboard-port 8791 --open-dashboard` |
 | 消息状态为 `failed` | CLI 返回非零退出码，程序会在下一轮重试，默认最多 3 次 |
@@ -285,6 +286,26 @@ py -3 -m monitor --recipients .\monitor\recipients.json --open-dashboard
 | 发给了错误的人 | 立即按 `Ctrl+C` 停止，核对 Gitea 登录号和 W3 账号，必要时使用映射表 |
 | 新失败没有通知 | 确认它发生在首次基线之后、属于当前 head 和五个关键门禁，并检查工作台 outbox |
 | `git pull` 提示本地修改冲突 | 不要执行 `git reset --hard`；保留现场并联系维护者 |
+
+Gitea API 超时时，先检查 443 端口：
+
+```powershell
+Test-NetConnection taichu.fun -Port 443
+```
+
+再用当前 PAT 直接读取一个开放 PR：
+
+```powershell
+$headers = @{ Authorization = "token $env:TAICHU_GITEA_TOKEN" }
+Invoke-RestMethod -Uri "https://taichu.fun/gitea/api/v1/repos/SystemAgentDev/TaiChu/pulls?state=open&limit=1" -Headers $headers -TimeoutSec 120
+```
+
+如果这条命令也超时，问题在内网、代理或 Gitea 服务端，需要找网络/Gitea 管理员；如果它能成功，再用更宽松的监控参数：
+
+```powershell
+Remove-Item "$env:TEMP\taichu-pr-monitor-dry-run.sqlite3" -ErrorAction SilentlyContinue
+py -3 -m monitor --once --dry-run --gitea-timeout 120 --gitea-retries 3 --state-db "$env:TEMP\taichu-pr-monitor-dry-run.sqlite3"
+```
 
 查看发送记录：
 

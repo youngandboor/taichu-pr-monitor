@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -41,11 +42,15 @@ class GiteaClient:
         self,
         api_base: str,
         credential: Optional[Credential],
-        timeout_seconds: int = 20,
+        timeout_seconds: float = 60,
+        max_retries: int = 2,
+        retry_backoff_seconds: float = 1.0,
     ) -> None:
         self.api_base = api_base.rstrip("/")
         self.credential = credential
         self.timeout_seconds = timeout_seconds
+        self.max_retries = max(0, max_retries)
+        self.retry_backoff_seconds = max(0.0, retry_backoff_seconds)
 
     def list_open_pulls(
         self,
@@ -145,19 +150,30 @@ class GiteaClient:
             headers=self._headers(),
             method="GET",
         )
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
-                data = response.read()
-        except urllib.error.HTTPError as error:
-            body = error.read().decode("utf-8", errors="replace")[:500]
-            raise GiteaApiError(f"Gitea API {error.code} for {path}: {body}") from error
-        except urllib.error.URLError as error:
-            raise GiteaApiError(f"Gitea API request failed for {path}: {error}") from error
+        total_attempts = self.max_retries + 1
+        for attempt in range(1, total_attempts + 1):
+            try:
+                with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+                    data = response.read()
+                    headers = dict(response.headers.items())
+                break
+            except urllib.error.HTTPError as error:
+                body = error.read().decode("utf-8", errors="replace")[:500]
+                raise GiteaApiError(f"Gitea API {error.code} for {path}: {body}") from error
+            except (urllib.error.URLError, TimeoutError) as error:
+                if attempt >= total_attempts:
+                    raise GiteaApiError(
+                        f"Gitea API request failed for {path} after "
+                        f"{total_attempts} attempts: {error}"
+                    ) from error
+                delay = self.retry_backoff_seconds * (2 ** (attempt - 1))
+                if delay:
+                    time.sleep(delay)
         try:
             payload = json.loads(data.decode("utf-8"))
         except json.JSONDecodeError as error:
             raise GiteaApiError(f"Gitea API returned invalid JSON for {path}") from error
-        return ApiResponse(payload, dict(response.headers.items()))
+        return ApiResponse(payload, headers)
 
     def _headers(self) -> Dict[str, str]:
         headers = {
