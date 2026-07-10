@@ -22,4 +22,13 @@ public class GateStateClassifierTest {
         assertTrue(GateStateClassifier.isSuccessful("success", "当前 head 该门禁已通过。"));
         assertFalse(GateStateClassifier.isActionableFailure("success", "当前 head 该门禁已通过。"));
     }
+
+    @Test
+    public void explicitSuccessIgnoresArtifactErrorFilename() {
+        String summary = "TaiChu PR build：执行结果：成功\n构建成功\ntestreport/error.txt：merge-gate 状态摘要";
+
+        assertEquals("success", GateStateClassifier.effectiveState("success", summary));
+        assertTrue(GateStateClassifier.isSuccessful("success", summary));
+        assertFalse(GateStateClassifier.isActionableFailure("success", summary));
+    }
 }

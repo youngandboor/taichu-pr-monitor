@@ -20,3 +20,9 @@ harmony/.hvigor/
 harmony/oh_modules/
 harmony/build/
 harmony/entry/build/
+
+# Local all-open-PR monitor state and recipient identities
+monitor/.state/
+monitor/*.sqlite3
+monitor/*.db
+monitor/recipients.json

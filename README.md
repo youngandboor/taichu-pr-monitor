@@ -1,6 +1,6 @@
 # TaiChu PR Monitor
 
-一套专注于 TaiChu Gitea PR 门禁的轻量工具，提供 Android、HarmonyOS 和本地 Web 三种使用方式。目标很直接：隐藏历史噪音，让最新失败、排队状态和下一步操作一眼可见。
+一套专注于 TaiChu Gitea PR 门禁的轻量工具，提供 Android、HarmonyOS、本地 Web 和全开放 PR WeLink 监控四种使用方式。目标很直接：隐藏历史噪音，让最新失败、排队状态和下一步操作一眼可见。
 
 ## 能做什么
 
@@ -15,13 +15,14 @@
 - 支持任意 `SystemAgentDev/TaiChu` PR 编号。
 - 保留 PR body、标题和分支信息。
 
-## 三种客户端
+## 客户端与服务
 
 | 目录 | 适用场景 | 主要能力 |
 | --- | --- | --- |
 | [`android/`](android/) | 商用 Android 手机随时监控 | PAT 授权、后台轮询、失败通知、rebuild/remerge |
 | [`harmony/`](harmony/) | HarmonyOS 原生手机 | ArkTS 原生页面、OAuth2 PKCE、rebuild/remerge |
 | [`web/`](web/) | Mac/PC 本地快速查看 | 单文件 Python bridge、紧凑 Web 页面、只读访问 |
+| [`monitor/`](monitor/) | 内网 Windows 持续监控 | 全部开放 PR、3 分钟轮询、WeLink 私聊、本地运维工作台 |
 
 ## 快速开始
 
@@ -45,12 +46,25 @@ python3 web/gitea_pr_brief.py \
 
 然后打开 `http://127.0.0.1:8787/pr/1222`。详细说明见 [`web/README.md`](web/README.md)。
 
+### 全开放 PR WeLink 监控
+
+Mac 上可用假 CLI 完成全部逻辑测试；真实发送仅在安装并登录 `welink-cli` 的内网设备验证：
+
+```bash
+python3 -m unittest discover -s monitor/tests -v
+python3 -m monitor --once --dry-run --state-db /tmp/taichu-pr-monitor-dry-run.sqlite3
+python3 -m monitor --dry-run --open-dashboard
+```
+
+详细说明见 [`monitor/README.md`](monitor/README.md)。
+
 ## 安全边界
 
 - 仓库不包含 Gitea token、账号密码或 OAuth client secret。
 - Android/HarmonyOS 签名材料、设备 profile、本机 SDK/JDK 和构建产物不会进入 Git。
 - Web bridge 的凭据只从环境变量或 `git credential fill` 读取，并仅保存在进程内存中。
 - Android token 仅保存在应用私有本地偏好中。
+- WeLink 监控不会提交真实收件人映射、SQLite 发送状态或 WeLink 登录信息。
 
 ## 验证
 
@@ -60,6 +74,9 @@ cd android
 
 cd ../web
 python3 -m unittest -v test_gitea_pr_brief.py
+
+cd ..
+python3 -m unittest discover -s monitor/tests -v
 ```
 
 HarmonyOS 工程通过 DevEco Studio / Hvigor 构建验证。
