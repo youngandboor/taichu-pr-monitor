@@ -73,6 +73,14 @@ python3 -m monitor --dashboard-port 8791
 python3 -m monitor --no-dashboard
 ```
 
+每个 Gitea API 请求默认等待 60 秒，网络超时后自动重试 2 次。内网链路较慢时可以临时放宽：
+
+```bash
+python3 -m monitor --once --dry-run --gitea-timeout 120 --gitea-retries 3
+```
+
+HTTP `401`、`403` 等明确响应不会重试，需要直接修复 PAT 或仓库权限。
+
 仪表盘默认只监听 `127.0.0.1`。如使用 `--dashboard-host 0.0.0.0` 暴露给局域网，页面没有登录认证，只能在可信内网和受控防火墙下使用。
 
 ## 提交人映射

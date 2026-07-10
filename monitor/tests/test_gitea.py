@@ -1,6 +1,25 @@
 import unittest
+import urllib.error
+from unittest import mock
 
-from monitor.gitea import ApiResponse, GiteaClient
+from monitor.gitea import ApiResponse, GiteaApiError, GiteaClient
+
+
+class FakeHttpResponse:
+    def __init__(self, payload, headers=None):
+        self.payload = payload
+        self.headers = headers or {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        return False
+
+    def read(self):
+        import json
+
+        return json.dumps(self.payload).encode("utf-8")
 
 
 class RecordingClient(GiteaClient):
@@ -16,6 +35,43 @@ class RecordingClient(GiteaClient):
 
 
 class GiteaClientTest(unittest.TestCase):
+    def test_timeout_is_retried_with_configured_request_timeout(self):
+        client = GiteaClient(
+            "https://taichu.fun/gitea/api/v1",
+            credential=None,
+            timeout_seconds=75,
+            max_retries=2,
+            retry_backoff_seconds=0.25,
+        )
+        timed_out = urllib.error.URLError(TimeoutError("timed out"))
+        with mock.patch(
+            "monitor.gitea.urllib.request.urlopen",
+            side_effect=[timed_out, FakeHttpResponse([{"number": 1}])],
+        ) as urlopen, mock.patch("monitor.gitea.time.sleep") as sleep:
+            response = client.api_get_response("/repos/SystemAgentDev/TaiChu/pulls")
+
+        self.assertEqual([{"number": 1}], response.payload)
+        self.assertEqual(2, urlopen.call_count)
+        self.assertTrue(all(call.kwargs["timeout"] == 75 for call in urlopen.call_args_list))
+        sleep.assert_called_once_with(0.25)
+
+    def test_timeout_error_reports_attempt_count_after_retries_are_exhausted(self):
+        client = GiteaClient(
+            "https://taichu.fun/gitea/api/v1",
+            credential=None,
+            max_retries=2,
+            retry_backoff_seconds=0,
+        )
+        timed_out = urllib.error.URLError(TimeoutError("timed out"))
+        with mock.patch(
+            "monitor.gitea.urllib.request.urlopen",
+            side_effect=timed_out,
+        ) as urlopen, mock.patch("monitor.gitea.time.sleep"):
+            with self.assertRaisesRegex(GiteaApiError, "after 3 attempts"):
+                client.api_get_response("/repos/SystemAgentDev/TaiChu/pulls")
+
+        self.assertEqual(3, urlopen.call_count)
+
     def test_lists_every_open_pull_request_with_pagination(self):
         client = RecordingClient(
             [

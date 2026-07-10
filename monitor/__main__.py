@@ -40,6 +40,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_POLL_INTERVAL_SECONDS,
         help="seconds between polling cycles (default: 180)",
     )
+    parser.add_argument(
+        "--gitea-timeout",
+        type=positive_float,
+        default=60,
+        help="timeout for each Gitea API request in seconds (default: 60)",
+    )
+    parser.add_argument(
+        "--gitea-retries",
+        type=non_negative_int,
+        default=2,
+        help="retries after a Gitea network error (default: 2)",
+    )
     parser.add_argument("--api-base", default=DEFAULT_API_BASE)
     parser.add_argument("--web-base", default=DEFAULT_WEB_BASE)
     parser.add_argument("--owner", default=DEFAULT_OWNER)
@@ -150,7 +162,12 @@ def main(argv=None) -> int:
             logger.warning(
                 "no Gitea credential found; requests will be anonymous unless the repository allows it"
             )
-        client = GiteaClient(args.api_base, credential)
+        client = GiteaClient(
+            args.api_base,
+            credential,
+            timeout_seconds=args.gitea_timeout,
+            max_retries=args.gitea_retries,
+        )
         sender = (
             DryRunSender()
             if args.dry_run
@@ -232,6 +249,13 @@ def positive_float(value: str) -> float:
     parsed = float(value)
     if parsed <= 0:
         raise argparse.ArgumentTypeError("must be greater than zero")
+    return parsed
+
+
+def non_negative_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be zero or greater")
     return parsed
 
 
