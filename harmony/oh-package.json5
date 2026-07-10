@@ -1,0 +1,13 @@
+{
+  "modelVersion": "5.0.0",
+  "name": "gitea_pr_monitor_harmony",
+  "version": "0.1.0",
+  "description": "TaiChu Gitea PR monitor",
+  "main": "",
+  "author": "",
+  "license": "",
+  "dependencies": {},
+  "devDependencies": {
+    "@ohos/hypium": "1.0.6"
+  }
+}

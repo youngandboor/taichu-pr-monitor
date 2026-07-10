@@ -1,0 +1,10 @@
+{
+  "modelVersion": "5.0.0",
+  "name": "entry",
+  "version": "0.1.0",
+  "description": "TaiChu PR Monitor entry module",
+  "main": "",
+  "author": "",
+  "license": "",
+  "dependencies": {}
+}

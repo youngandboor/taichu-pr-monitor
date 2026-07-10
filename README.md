@@ -1,91 +1,65 @@
 # TaiChu PR Monitor
 
-一款给 TaiChu 开发者使用的 Android PR 门禁监控工具。输入 PR 编号，即刻看到真正影响合入的信息，不必再从冗长的 Gitea 评论里寻找失败原因。
+一套专注于 TaiChu Gitea PR 门禁的轻量工具，提供 Android、HarmonyOS 和本地 Web 三种使用方式。目标很直接：隐藏历史噪音，让最新失败、排队状态和下一步操作一眼可见。
 
-## 为什么值得用
+## 能做什么
 
-- **一眼定位阻塞项**：只关注五个关键门禁的最新状态与有效失败摘要。
-- **过滤历史噪音**：旧状态、旧评论和已经成功的失败记录不会反复干扰判断。
-- **看清排队进度**：分别展示最近一次 `/ci build` 与 `/ci merge` 的时间和队列状态。
-- **手机直接操作**：通过 `rebuild`、`remerge` 快速发送 CI 命令。
-- **后台失败提醒**：监控开启后定时刷新，新门禁失败按门禁单独通知且只提醒一次。
-- **支持任意 TaiChu PR**：可输入 `SystemAgentDev/TaiChu` 仓库中的任意 PR 编号，也会自动定位当前用户最近更新的 PR。
+- 聚合并归一化五个关键门禁：
+  - `protected-file-approval`
+  - `taichu/codex-pr-review`
+  - `taichu/pr-build`
+  - `taichu/dev-cloud-preflight`
+  - `ci/merge-gate`
+- 只展示最新且有价值的失败摘要，避免旧评论反复干扰。
+- 显示最近的 `/ci build`、`/ci merge` 和队列状态。
+- 支持任意 `SystemAgentDev/TaiChu` PR 编号。
+- 保留 PR body、标题和分支信息。
 
-## 关注的门禁
+## 三种客户端
 
-- `protected-file-approval`
-- `taichu/codex-pr-review`
-- `taichu/pr-build`
-- `taichu/dev-cloud-preflight`
-- `ci/merge-gate`
+| 目录 | 适用场景 | 主要能力 |
+| --- | --- | --- |
+| [`android/`](android/) | 商用 Android 手机随时监控 | PAT 授权、后台轮询、失败通知、rebuild/remerge |
+| [`harmony/`](harmony/) | HarmonyOS 原生手机 | ArkTS 原生页面、OAuth2 PKCE、rebuild/remerge |
+| [`web/`](web/) | Mac/PC 本地快速查看 | 单文件 Python bridge、紧凑 Web 页面、只读访问 |
 
-页面还会保留 PR 标题、分支信息、PR body，以及最近的 build/merge 队列信息。
+## 快速开始
 
-## 登录与授权
+### Android
 
-应用复用 `https://taichu.fun/gitea/user/login` 的网页登录流程。登录后，“一键授权并验证”会在 Gitea 设置页创建 Personal Access Token，并立即调用 Gitea API 校验。Token 仅保存在 Android 应用自己的本地偏好中，不写入源码或 Git 仓库。
+从 [GitHub Releases](https://github.com/youngandboor/taichu-pr-monitor/releases/latest) 下载 `taichu_pr_monitor-release.apk`，在手机上通过系统安装器安装。详细说明见 [`android/README.md`](android/README.md)。
 
-退出应用授权会清除本地 token；重新使用时可再次一键创建并验证。
+### HarmonyOS
 
-## 安装
+使用 DevEco Studio 打开 `harmony/`，同步 HarmonyOS 6.1.1 / API 24 SDK 后运行 `entry` 模块。详细说明见 [`harmony/README.md`](harmony/README.md)。
 
-从 GitHub Releases 下载：
+### 本地 Web
 
-```text
-taichu_pr_monitor-release.apk
-```
-
-将 APK 发送到 Android 手机并通过系统安装器安装即可。首次安装时，系统可能要求允许“安装未知应用”和通知权限。
-
-通过 ADB 安装：
+无需第三方 Python 依赖：
 
 ```bash
-adb install -r taichu_pr_monitor-release.apk
+python3 web/gitea_pr_brief.py \
+  https://taichu.fun/gitea/SystemAgentDev/TaiChu/pulls/1222 \
+  --serve
 ```
 
-## 本地开发
+然后打开 `http://127.0.0.1:8787/pr/1222`。详细说明见 [`web/README.md`](web/README.md)。
 
-要求：
+## 安全边界
 
-- JDK 17 或更高版本
-- Android SDK 35
-- Android Build Tools 35
+- 仓库不包含 Gitea token、账号密码或 OAuth client secret。
+- Android/HarmonyOS 签名材料、设备 profile、本机 SDK/JDK 和构建产物不会进入 Git。
+- Web bridge 的凭据只从环境变量或 `git credential fill` 读取，并仅保存在进程内存中。
+- Android token 仅保存在应用私有本地偏好中。
 
-运行单元测试：
+## 验证
 
 ```bash
+cd android
 ./gradlew :app:testReleaseUnitTest --no-daemon --max-workers=1
+
+cd ../web
+python3 -m unittest -v test_gitea_pr_brief.py
 ```
 
-构建 debug APK：
-
-```bash
-./gradlew :app:assembleDebug
-```
-
-构建签名 release APK：
-
-```bash
-PRMONITOR_STORE_FILE="$PWD/local-signing/prmonitor-release.jks" \
-PRMONITOR_STORE_PASSWORD='<store-password>' \
-PRMONITOR_KEY_ALIAS='prmonitor' \
-PRMONITOR_KEY_PASSWORD='<key-password>' \
-./gradlew :app:assembleRelease --no-daemon --max-workers=1
-```
-
-产物路径：
-
-```text
-app/build/outputs/apk/release/taichu_pr_monitor-release.apk
-```
-
-签名文件、密码、`local.properties`、本地 Android SDK/JDK、构建目录和 `dist/` 均已被 `.gitignore` 排除。
-
-## 当前状态
-
-- Android 8.0 及以上（minSdk 26）
-- 前台与 foreground service 后台轮询
-- 五门禁最新状态归一化
-- 新失败去重通知
-- PR 切换隔离通知状态
-- 已在商用 vivo Android 手机验证安装与运行
+HarmonyOS 工程通过 DevEco Studio / Hvigor 构建验证。

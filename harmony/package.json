@@ -1,0 +1,6 @@
+{
+  "devDependencies": {
+    "@ohos/hvigor": "4.6.2",
+    "@ohos/hvigor-ohos-plugin": "4.6.2"
+  }
+}

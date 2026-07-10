@@ -1,12 +1,22 @@
-.android-sdk/
-.gradle/
-.jdk/
-build/
-local.properties
-.idea/
 .DS_Store
+.idea/
 *.iml
-local-signing/
-dist/
+__pycache__/
+*.py[cod]
 
-app/build/
+# Local distributables and signing material
+dist/
+**/local-signing/
+
+# Android local toolchains and outputs
+android/.android-sdk/
+android/.gradle/
+android/.jdk/
+android/local.properties
+android/app/build/
+
+# HarmonyOS generated files
+harmony/.hvigor/
+harmony/oh_modules/
+harmony/build/
+harmony/entry/build/
