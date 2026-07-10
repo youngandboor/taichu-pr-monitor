@@ -19,6 +19,32 @@ GATE_CONTEXTS = (
     "ci/merge-gate",
 )
 
+# Validated surname readings cover current TaiChu authors plus common surnames.
+# Unknown or ambiguous data fails closed and can be handled by a recipient override.
+_SURNAME_INITIALS = {
+    "安": "a", "白": "b", "鲍": "b", "毕": "b", "卞": "b", "卜": "b", "柏": "b",
+    "曹": "c", "常": "c", "陈": "c", "程": "c", "崔": "c", "蔡": "c", "岑": "c", "褚": "c",
+    "戴": "d", "邓": "d", "丁": "d", "董": "d", "杜": "d", "窦": "d", "段": "d",
+    "范": "f", "方": "f", "费": "f", "冯": "f", "傅": "f", "符": "f",
+    "高": "g", "葛": "g", "龚": "g", "顾": "g", "郭": "g",
+    "韩": "h", "何": "h", "贺": "h", "郝": "h", "胡": "h", "黄": "h", "华": "h", "侯": "h", "洪": "h",
+    "纪": "j", "贾": "j", "姜": "j", "江": "j", "蒋": "j", "金": "j",
+    "康": "k", "孔": "k", "柯": "k", "邝": "k",
+    "赖": "l", "雷": "l", "黎": "l", "李": "l", "连": "l", "廉": "l", "梁": "l", "廖": "l", "林": "l", "凌": "l", "刘": "l", "柳": "l", "龙": "l", "卢": "l", "鲁": "l", "陆": "l", "罗": "l", "吕": "l",
+    "马": "m", "毛": "m", "孟": "m", "苗": "m", "莫": "m", "穆": "m",
+    "倪": "n", "聂": "n", "宁": "n", "牛": "n",
+    "欧": "o", "区": "o",
+    "潘": "p", "彭": "p", "皮": "p", "平": "p", "蒲": "p",
+    "钱": "q", "秦": "q", "齐": "q", "乔": "q", "邱": "q", "仇": "q",
+    "任": "r", "饶": "r",
+    "单": "s", "邵": "s", "沈": "s", "施": "s", "石": "s", "史": "s", "时": "s", "宋": "s", "苏": "s", "孙": "s",
+    "谭": "t", "唐": "t", "汤": "t", "陶": "t", "滕": "t", "田": "t", "童": "t",
+    "万": "w", "汪": "w", "王": "w", "韦": "w", "魏": "w", "温": "w", "文": "w", "翁": "w", "巫": "w", "邬": "w", "吴": "w", "伍": "w", "武": "w", "兀": "w",
+    "夏": "x", "萧": "x", "肖": "x", "谢": "x", "辛": "x", "熊": "x", "徐": "x", "许": "x", "薛": "x", "解": "x",
+    "严": "y", "闫": "y", "颜": "y", "杨": "y", "姚": "y", "叶": "y", "易": "y", "殷": "y", "尹": "y", "尤": "y", "于": "y", "余": "y", "俞": "y", "袁": "y", "岳": "y", "乐": "y",
+    "臧": "z", "曾": "z", "翟": "z", "詹": "z", "张": "z", "章": "z", "赵": "z", "郑": "z", "钟": "z", "周": "z", "朱": "z", "祝": "z", "庄": "z", "邹": "z", "查": "z",
+}
+
 
 @dataclasses.dataclass(frozen=True)
 class GateFailure:
@@ -39,6 +65,7 @@ class PrSnapshot:
     latest_ci_command_key: str
     scanned_at: str
     failures: Tuple[GateFailure, ...]
+    author_w3: str = ""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -184,7 +211,28 @@ def build_pr_snapshot(
         latest_ci_command_key=latest_command_key,
         scanned_at=_value(scanned_at),
         failures=tuple(failures),
+        author_w3=derive_w3_account(user),
     )
+
+
+def derive_w3_account(user: Mapping[str, Any]) -> str:
+    """Derive the internal W3 account without guessing missing identity data."""
+    full_name = _value(user.get("full_name")).strip()
+    explicit = re.search(r"\b([A-Za-z]\d{8})\s*$", full_name)
+    if explicit:
+        return explicit.group(1).lower()
+    employee_number = re.search(r"(\d{8})\s*$", full_name)
+    if not employee_number:
+        return ""
+    display_name = full_name[: employee_number.start()].strip()
+    if not display_name:
+        return ""
+    first = display_name[0]
+    if first.isascii() and first.isalpha():
+        initial = first.lower()
+    else:
+        initial = _SURNAME_INITIALS.get(first, "")
+    return initial + employee_number.group(1) if initial else ""
 
 
 def poll_tracker(state: TrackerState, snapshot: PrSnapshot) -> TrackerResult:

@@ -10,7 +10,7 @@
 - 只识别五个关键门禁的当前失败；
 - 第一次运行只建立基线，不补发历史问题；
 - 新问题通过 WeLink 私聊发送给 PR 提交人；
-- Gitea 登录号通过本地映射表对应到 `y` 开头的 WeLink W3 账号；
+- 从 Gitea `full_name` 自动生成“姓氏拼音首字母 + 8 位工号”的 WeLink W3 账号；
 - 浏览器可在 `http://127.0.0.1:8790` 查看运行状态和发送记录。
 
 ## 开始前准备
@@ -153,7 +153,7 @@ py -3 -m unittest discover -s monitor/tests -v
 
 ```powershell
 Remove-Item "$env:TEMP\taichu-pr-monitor-dry-run.sqlite3" -ErrorAction SilentlyContinue
-py -3 -m monitor --once --dry-run --state-db "$env:TEMP\taichu-pr-monitor-dry-run.sqlite3"
+py -3 -m monitor --once --dry-run --strict-recipients --state-db "$env:TEMP\taichu-pr-monitor-dry-run.sqlite3"
 ```
 
 开放 PR 较多时可能需要几十秒。成功日志类似：
@@ -164,22 +164,13 @@ poll complete: open=... scanned=... new_failures=0 sent=0 ... errors=0
 
 重点看 `errors=0`。如果是 `401`、`403` 或无法连接 Gitea，先检查 PAT 和内网访问。
 
-## 第 8 步：配置收件人和自发兜底
+## 第 8 步：配置自发兜底
 
-复制示例映射并打开编辑：
+正常情况下不需要人工收件人表。监控会按下面顺序从 Gitea `full_name` 自动得到 W3：
 
-```powershell
-Copy-Item .\monitor\recipients.example.json .\monitor\recipients.json
-notepad .\monitor\recipients.json
-```
-
-键是 Gitea 登录号，值是 `y` 开头的 W3 账号。左右两边都必须保留英文双引号：
-
-```json
-{
-  "gitea-login": "y00000000"
-}
-```
+1. 末尾已有“字母 + 8 位工号”时直接使用；
+2. 否则取中文姓氏的拼音首字母，加末尾 8 位工号；
+3. 无法解析时报告错误并停止正式启动，不会把 Gitea 昵称当成 W3。
 
 WeLink 不支持当前登录账号给自己发私聊，因此还要设置当前发送账号和备用接收人：
 
@@ -190,14 +181,14 @@ $env:TAICHU_WELINK_SELF_FALLBACK = "y备用接收账号"
 
 如果映射后的目标等于发送账号，监控会自动改发给备用接收人。两者必须同时设置且不能相同。
 
-`monitor\recipients.json` 已被 Git 忽略，不要强制提交，也不要通过非批准渠道传播。
+只有 dry-run 报告某位作者无法解析时，才需要复制 `monitor\recipients.example.json` 为 `monitor\recipients.json` 并添加例外覆盖。该文件已被 Git 忽略，不要强制提交。
 
 ## 第 9 步：建立正式基线
 
 只在前面步骤全部通过后执行：
 
 ```powershell
-py -3 -m monitor --once --recipients .\monitor\recipients.json --require-recipient-map
+py -3 -m monitor --once --strict-recipients
 ```
 
 这是正式状态库的第一次扫描。它会记录当前已有问题作为基线，不会把全部历史失败群发出去。
@@ -213,7 +204,7 @@ monitor\.state\monitor.sqlite3
 ## 第 10 步：启动持续监控
 
 ```powershell
-py -3 -m monitor --recipients .\monitor\recipients.json --require-recipient-map --open-dashboard
+py -3 -m monitor --strict-recipients --open-dashboard
 ```
 
 正常情况下浏览器会自动打开：
@@ -276,7 +267,7 @@ $env:TAICHU_WELINK_SELF_FALLBACK = "y备用接收账号"
 启动：
 
 ```powershell
-py -3 -m monitor --recipients .\monitor\recipients.json --require-recipient-map --open-dashboard
+py -3 -m monitor --strict-recipients --open-dashboard
 ```
 
 更新代码不会删除 `monitor\.state\monitor.sqlite3`，因此已经发送过的问题不会因为正常升级而重新通知。

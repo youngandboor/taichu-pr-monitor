@@ -18,6 +18,7 @@ class OutboxEvent:
     pr_number: int
     author: str
     message: str
+    receiver_hint: str = ""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -126,12 +127,13 @@ class MonitorStore:
                     INSERT OR IGNORE INTO delivery_outbox (
                         event_key, pr_number, author, receiver, message,
                         status, attempts, last_error, created_at, updated_at
-                    ) VALUES (?, ?, ?, '', ?, 'pending', 0, '', ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, 'pending', 0, '', ?, ?)
                     """,
                     (
                         event.event_key,
                         event.pr_number,
                         event.author,
+                        event.receiver_hint,
                         event.message,
                         now,
                         now,

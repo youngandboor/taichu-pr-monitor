@@ -82,9 +82,11 @@ class RecipientDirectory:
                 mapping[author.strip()] = receiver.strip()
         self.mapping = mapping
 
-    def resolve(self, author: str) -> Optional[str]:
+    def resolve(self, author: str, inferred_receiver: str = "") -> Optional[str]:
         if author in self.mapping:
             receiver = self.mapping[author]
+        elif inferred_receiver:
+            receiver = inferred_receiver
         else:
             receiver = author if self.direct and author else None
         if (
@@ -131,6 +133,7 @@ class MonitorService:
         started = time.monotonic()
         scanned_at = self.clock()
         report = PollReport(scanned_at=scanned_at)
+        missing_recipient_authors = set()
         recipients_ready = True
         listing_succeeded = False
         try:
@@ -166,6 +169,11 @@ class MonitorService:
                 number = _pr_number(pr)
                 try:
                     snapshot = future.result()
+                    if recipients_ready and not self.recipients.resolve(
+                        snapshot.author,
+                        snapshot.author_w3,
+                    ):
+                        missing_recipient_authors.add(snapshot.author)
                     current = self.store.get_tracker(snapshot.number)
                     result = poll_tracker(current, snapshot)
                     event = self._event_for(snapshot, result.notifications)
@@ -181,6 +189,11 @@ class MonitorService:
                     message = f"PR #{number or '?'} scan failed: {error}"
                     report.errors.append(message)
                     self.logger.error(message)
+
+        for author in sorted(missing_recipient_authors):
+            message = f"no W3 recipient could be derived or mapped for Gitea author {author}"
+            report.errors.append(message)
+            self.logger.error(message)
 
         if recipients_ready:
             self._dispatch_outbox(report)
@@ -240,11 +253,12 @@ class MonitorService:
             pr_number=snapshot.number,
             author=snapshot.author,
             message=format_message(snapshot, failures),
+            receiver_hint=snapshot.author_w3,
         )
 
     def _dispatch_outbox(self, report: PollReport) -> None:
         for record in self.store.list_dispatchable(self.max_send_attempts):
-            receiver = self.recipients.resolve(record.author)
+            receiver = self.recipients.resolve(record.author, record.receiver)
             if not receiver:
                 self.store.update_delivery(
                     record.id,

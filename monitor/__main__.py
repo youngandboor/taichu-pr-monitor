@@ -70,8 +70,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--require-recipient-map",
+        "--strict-recipients",
         action="store_true",
-        help="disable direct Gitea-login-to-WeLink-user mapping",
+        help="require a Gitea-derived W3 or override; disable raw-login fallback",
     )
     parser.add_argument(
         "--welink-cli",

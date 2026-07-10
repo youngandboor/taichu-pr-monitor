@@ -10,6 +10,7 @@ from monitor.welink import DeliveryResult
 
 class FakeGiteaClient:
     def __init__(self):
+        self.user = {"login": "w00123"}
         self.statuses = [
             {
                 "id": 1,
@@ -33,7 +34,7 @@ class FakeGiteaClient:
                 "number": 7,
                 "title": "Repair build",
                 "html_url": "https://taichu.fun/gitea/SystemAgentDev/TaiChu/pulls/7",
-                "user": {"login": "w00123"},
+                "user": dict(self.user),
                 "head": {"sha": "abcdef123456"},
             }
         ]
@@ -135,11 +136,14 @@ class MonitorServiceTest(unittest.TestCase):
                 self.assertEqual(1, len(snapshots))
                 self.assertEqual("taichu/pr-build", snapshots[0].failures[0].context)
 
-    def test_sender_self_recipient_is_routed_to_configured_fallback(self):
+    def test_gitea_derived_sender_self_recipient_is_routed_to_fallback(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            mapping = pathlib.Path(temp_dir) / "recipients.json"
-            mapping.write_text('{"w00123": "y00000001"}', encoding="utf-8")
             client = FakeGiteaClient()
+            client.user = {
+                "login": "w00123",
+                "full_name": "杨示例 00000001",
+                "email": "unrelated-prefix.example@company.test",
+            }
             sender = SequenceSender(["success"])
             store = MonitorStore(pathlib.Path(temp_dir) / "state.sqlite3")
             service = MonitorService(
@@ -147,7 +151,6 @@ class MonitorServiceTest(unittest.TestCase):
                 store=store,
                 sender=sender,
                 recipients=RecipientDirectory(
-                    path=mapping,
                     direct=False,
                     sender_account="y00000001",
                     self_fallback_receiver="y00000002",
@@ -174,6 +177,32 @@ class MonitorServiceTest(unittest.TestCase):
                 self.assertEqual(1, report.delivered)
                 self.assertEqual("y00000002", sender.calls[0][0])
                 self.assertEqual("y00000002", store.list_outbox()[0].receiver)
+
+    def test_strict_recipient_mode_reports_missing_w3_during_baseline(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = FakeGiteaClient()
+            sender = SequenceSender([])
+            service, store = self.make_service(
+                temp_dir,
+                client,
+                sender,
+                Clock("2026-07-10T10:05:00+08:00"),
+            )
+            service.recipients = RecipientDirectory(direct=False)
+            with store:
+                report = service.poll_once()
+
+            self.assertTrue(any("no W3 recipient" in error for error in report.errors))
+            self.assertEqual([], sender.calls)
+
+    def test_explicit_mapping_overrides_gitea_derived_w3(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            mapping = pathlib.Path(temp_dir) / "recipients.json"
+            mapping.write_text('{"w00123": "z00000003"}', encoding="utf-8")
+            directory = RecipientDirectory(path=mapping, direct=False)
+            directory.refresh()
+
+            self.assertEqual("z00000003", directory.resolve("w00123", "e00000001"))
 
     def test_self_fallback_cannot_equal_sender_account(self):
         with self.assertRaisesRegex(ValueError, "must differ"):

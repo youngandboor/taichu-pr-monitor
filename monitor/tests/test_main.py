@@ -25,6 +25,11 @@ class MainArgumentsTest(unittest.TestCase):
         self.assertEqual("y00000001", args.welink_sender)
         self.assertEqual("y00000002", args.self_fallback_receiver)
 
+    def test_strict_recipients_alias_disables_raw_login_fallback(self):
+        args = build_parser().parse_args(["--strict-recipients"])
+
+        self.assertTrue(args.require_recipient_map)
+
 
 if __name__ == "__main__":
     unittest.main()
