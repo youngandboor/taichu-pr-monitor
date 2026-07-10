@@ -108,33 +108,32 @@ class MonitorServiceTest(unittest.TestCase):
                     "2026-07-10T10:11:00+08:00",
                 ),
             )
-            self.addCleanup(store.close)
+            with store:
+                first = service.poll_once()
+                client.statuses = [
+                    {
+                        "id": 2,
+                        "context": "taichu/pr-build",
+                        "state": "failure",
+                        "description": "compile error in module foo",
+                        "updated_at": "2026-07-10T10:06:00+08:00",
+                    }
+                ]
+                second = service.poll_once()
+                self.assertEqual(1, store.latest_scan().new_notifications)
+                third = service.poll_once()
 
-            first = service.poll_once()
-            client.statuses = [
-                {
-                    "id": 2,
-                    "context": "taichu/pr-build",
-                    "state": "failure",
-                    "description": "compile error in module foo",
-                    "updated_at": "2026-07-10T10:06:00+08:00",
-                }
-            ]
-            second = service.poll_once()
-            self.assertEqual(1, store.latest_scan().new_notifications)
-            third = service.poll_once()
-
-            self.assertEqual(0, first.new_notifications)
-            self.assertEqual(1, second.new_notifications)
-            self.assertEqual(0, third.new_notifications)
-            self.assertEqual(1, len(sender.calls))
-            self.assertEqual("w00123", sender.calls[0][0])
-            self.assertIn("PR #7", sender.calls[0][1])
-            self.assertIn("taichu/pr-build", sender.calls[0][1])
-            self.assertIn("compile error", sender.calls[0][1])
-            snapshots = store.list_snapshots()
-            self.assertEqual(1, len(snapshots))
-            self.assertEqual("taichu/pr-build", snapshots[0].failures[0].context)
+                self.assertEqual(0, first.new_notifications)
+                self.assertEqual(1, second.new_notifications)
+                self.assertEqual(0, third.new_notifications)
+                self.assertEqual(1, len(sender.calls))
+                self.assertEqual("w00123", sender.calls[0][0])
+                self.assertIn("PR #7", sender.calls[0][1])
+                self.assertIn("taichu/pr-build", sender.calls[0][1])
+                self.assertIn("compile error", sender.calls[0][1])
+                snapshots = store.list_snapshots()
+                self.assertEqual(1, len(snapshots))
+                self.assertEqual("taichu/pr-build", snapshots[0].failures[0].context)
 
     def test_failed_delivery_retries_from_durable_outbox(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -150,25 +149,25 @@ class MonitorServiceTest(unittest.TestCase):
                     "2026-07-10T10:11:00+08:00",
                 ),
             )
-            self.addCleanup(store.close)
-            service.poll_once()
-            client.statuses = [
-                {
-                    "id": 2,
-                    "context": "taichu/pr-build",
-                    "state": "failure",
-                    "description": "new failure",
-                    "updated_at": "2026-07-10T10:06:00+08:00",
-                }
-            ]
+            with store:
+                service.poll_once()
+                client.statuses = [
+                    {
+                        "id": 2,
+                        "context": "taichu/pr-build",
+                        "state": "failure",
+                        "description": "new failure",
+                        "updated_at": "2026-07-10T10:06:00+08:00",
+                    }
+                ]
 
-            failed = service.poll_once()
-            retried = service.poll_once()
+                failed = service.poll_once()
+                retried = service.poll_once()
 
-            self.assertEqual(1, failed.delivery_failures)
-            self.assertEqual(1, retried.delivered)
-            self.assertEqual(2, len(sender.calls))
-            self.assertEqual("sent", store.list_outbox()[0].status)
+                self.assertEqual(1, failed.delivery_failures)
+                self.assertEqual(1, retried.delivered)
+                self.assertEqual(2, len(sender.calls))
+                self.assertEqual("sent", store.list_outbox()[0].status)
 
     def test_timeout_is_uncertain_and_is_not_automatically_retried(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -184,24 +183,24 @@ class MonitorServiceTest(unittest.TestCase):
                     "2026-07-10T10:11:00+08:00",
                 ),
             )
-            self.addCleanup(store.close)
-            service.poll_once()
-            client.statuses = [
-                {
-                    "id": 2,
-                    "context": "taichu/pr-build",
-                    "state": "failure",
-                    "description": "new failure",
-                    "updated_at": "2026-07-10T10:06:00+08:00",
-                }
-            ]
+            with store:
+                service.poll_once()
+                client.statuses = [
+                    {
+                        "id": 2,
+                        "context": "taichu/pr-build",
+                        "state": "failure",
+                        "description": "new failure",
+                        "updated_at": "2026-07-10T10:06:00+08:00",
+                    }
+                ]
 
-            timed_out = service.poll_once()
-            service.poll_once()
+                timed_out = service.poll_once()
+                service.poll_once()
 
-            self.assertEqual(1, timed_out.delivery_uncertain)
-            self.assertEqual(1, len(sender.calls))
-            self.assertEqual("uncertain", store.list_outbox()[0].status)
+                self.assertEqual(1, timed_out.delivery_uncertain)
+                self.assertEqual(1, len(sender.calls))
+                self.assertEqual("uncertain", store.list_outbox()[0].status)
 
     def test_invalid_mapping_fails_closed_without_sending(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -220,23 +219,23 @@ class MonitorServiceTest(unittest.TestCase):
                     "2026-07-10T10:08:00+08:00",
                 ),
             )
-            self.addCleanup(store.close)
-            service.poll_once()
-            client.statuses = [
-                {
-                    "id": 2,
-                    "context": "taichu/pr-build",
-                    "state": "failure",
-                    "description": "new failure",
-                    "updated_at": "2026-07-10T10:06:00+08:00",
-                }
-            ]
+            with store:
+                service.poll_once()
+                client.statuses = [
+                    {
+                        "id": 2,
+                        "context": "taichu/pr-build",
+                        "state": "failure",
+                        "description": "new failure",
+                        "updated_at": "2026-07-10T10:06:00+08:00",
+                    }
+                ]
 
-            report = service.poll_once()
+                report = service.poll_once()
 
-            self.assertTrue(report.errors)
-            self.assertEqual([], sender.calls)
-            self.assertEqual("pending", store.list_outbox()[0].status)
+                self.assertTrue(report.errors)
+                self.assertEqual([], sender.calls)
+                self.assertEqual("pending", store.list_outbox()[0].status)
 
 
 if __name__ == "__main__":

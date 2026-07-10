@@ -34,70 +34,68 @@ class DashboardStoreTest(unittest.TestCase):
 
     def test_dashboard_payload_prioritizes_failures_and_delivery_attention(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            store = MonitorStore(pathlib.Path(temp_dir) / "state.sqlite3")
-            self.addCleanup(store.close)
-            snapshot = self.snapshot()
-            store.apply_poll(
-                snapshot.number,
-                TrackerState.empty(),
-                OutboxEvent("event-1", 42, "w00123", "message"),
-                snapshot=snapshot,
-            )
-            outbox_id = store.list_outbox()[0].id
-            store.update_delivery(
-                outbox_id,
-                "uncertain",
-                "w00123",
-                "welink-cli timed out",
-                increment_attempt=True,
-            )
-            store.record_scan(
-                scanned_at="2026-07-10T10:05:00+08:00",
-                duration_seconds=24.8,
-                open_prs=106,
-                scanned_prs=106,
-                new_notifications=1,
-                delivered=0,
-                delivery_failures=0,
-                delivery_uncertain=1,
-                unmapped=0,
-                errors=[],
-            )
+            with MonitorStore(pathlib.Path(temp_dir) / "state.sqlite3") as store:
+                snapshot = self.snapshot()
+                store.apply_poll(
+                    snapshot.number,
+                    TrackerState.empty(),
+                    OutboxEvent("event-1", 42, "w00123", "message"),
+                    snapshot=snapshot,
+                )
+                outbox_id = store.list_outbox()[0].id
+                store.update_delivery(
+                    outbox_id,
+                    "uncertain",
+                    "w00123",
+                    "welink-cli timed out",
+                    increment_attempt=True,
+                )
+                store.record_scan(
+                    scanned_at="2026-07-10T10:05:00+08:00",
+                    duration_seconds=24.8,
+                    open_prs=106,
+                    scanned_prs=106,
+                    new_notifications=1,
+                    delivered=0,
+                    delivery_failures=0,
+                    delivery_uncertain=1,
+                    unmapped=0,
+                    errors=[],
+                )
 
-            payload = dashboard_payload(store, {"scanning": False, "scan_requested": False})
+                payload = dashboard_payload(store, {"scanning": False, "scan_requested": False})
 
-            self.assertEqual(106, payload["metrics"]["open_prs"])
-            self.assertEqual(1, payload["metrics"]["failing_prs"])
-            self.assertEqual(1, payload["metrics"]["delivery_attention"])
-            self.assertEqual(42, payload["pull_requests"][0]["number"])
-            self.assertEqual("uncertain", payload["outbox"][0]["status"])
+                self.assertEqual(106, payload["metrics"]["open_prs"])
+                self.assertEqual(1, payload["metrics"]["failing_prs"])
+                self.assertEqual(1, payload["metrics"]["delivery_attention"])
+                self.assertEqual(42, payload["pull_requests"][0]["number"])
+                self.assertEqual("uncertain", payload["outbox"][0]["status"])
 
     def test_requeue_resets_a_failed_or_uncertain_delivery(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            store = MonitorStore(pathlib.Path(temp_dir) / "state.sqlite3")
-            self.addCleanup(store.close)
-            snapshot = self.snapshot()
-            store.apply_poll(
-                snapshot.number,
-                TrackerState.empty(),
-                OutboxEvent("event-1", 42, "w00123", "message"),
-                snapshot=snapshot,
-            )
-            record = store.list_outbox()[0]
-            store.update_delivery(
-                record.id,
-                "dead",
-                "w00123",
-                "three failures",
-                increment_attempt=True,
-            )
+            with MonitorStore(pathlib.Path(temp_dir) / "state.sqlite3") as store:
+                snapshot = self.snapshot()
+                store.apply_poll(
+                    snapshot.number,
+                    TrackerState.empty(),
+                    OutboxEvent("event-1", 42, "w00123", "message"),
+                    snapshot=snapshot,
+                )
+                record = store.list_outbox()[0]
+                store.update_delivery(
+                    record.id,
+                    "dead",
+                    "w00123",
+                    "three failures",
+                    increment_attempt=True,
+                )
 
-            self.assertTrue(store.requeue_delivery(record.id))
+                self.assertTrue(store.requeue_delivery(record.id))
 
-            retried = store.list_outbox()[0]
-            self.assertEqual("pending", retried.status)
-            self.assertEqual(0, retried.attempts)
-            self.assertEqual("", retried.last_error)
+                retried = store.list_outbox()[0]
+                self.assertEqual("pending", retried.status)
+                self.assertEqual(0, retried.attempts)
+                self.assertEqual("", retried.last_error)
 
 
 class DashboardServerTest(unittest.TestCase):
