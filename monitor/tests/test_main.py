@@ -12,6 +12,19 @@ class MainArgumentsTest(unittest.TestCase):
         self.assertEqual(90, args.gitea_timeout)
         self.assertEqual(3, args.gitea_retries)
 
+    def test_welink_self_recipient_fallback_is_configurable(self):
+        args = build_parser().parse_args(
+            [
+                "--welink-sender",
+                "y00000001",
+                "--self-fallback-receiver",
+                "y00000002",
+            ]
+        )
+
+        self.assertEqual("y00000001", args.welink_sender)
+        self.assertEqual("y00000002", args.self_fallback_receiver)
+
 
 if __name__ == "__main__":
     unittest.main()

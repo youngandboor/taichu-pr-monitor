@@ -79,6 +79,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="welink-cli executable or Windows npm .cmd shim",
     )
     parser.add_argument(
+        "--welink-sender",
+        default=os.environ.get("TAICHU_WELINK_SENDER", ""),
+        help="W3 account logged into welink-cli, used to detect unsupported self-messages",
+    )
+    parser.add_argument(
+        "--self-fallback-receiver",
+        default=os.environ.get("TAICHU_WELINK_SELF_FALLBACK", ""),
+        help="alternate W3 receiver when the intended recipient equals the WeLink sender",
+    )
+    parser.add_argument(
         "--welink-timeout",
         type=positive_float,
         default=20.0,
@@ -173,10 +183,16 @@ def main(argv=None) -> int:
             if args.dry_run
             else WeLinkCli([args.welink_cli], timeout_seconds=args.welink_timeout)
         )
-        recipients = RecipientDirectory(
-            path=args.recipients,
-            direct=not args.require_recipient_map,
-        )
+        try:
+            recipients = RecipientDirectory(
+                path=args.recipients,
+                direct=not args.require_recipient_map,
+                sender_account=args.welink_sender,
+                self_fallback_receiver=args.self_fallback_receiver,
+            )
+        except ValueError as error:
+            logger.error("recipient configuration error: %s", error)
+            return 2
         service = MonitorService(
             client=client,
             store=store,

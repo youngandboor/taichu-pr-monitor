@@ -38,11 +38,28 @@ class PollReport:
 
 
 class RecipientDirectory:
-    """Optional overrides plus direct Gitea-login-to-WeLink-user mapping."""
+    """Resolve authors and reroute a WeLink sender's unsupported self-message."""
 
-    def __init__(self, path: Optional[pathlib.Path] = None, direct: bool = True) -> None:
+    def __init__(
+        self,
+        path: Optional[pathlib.Path] = None,
+        direct: bool = True,
+        sender_account: Optional[str] = None,
+        self_fallback_receiver: Optional[str] = None,
+    ) -> None:
         self.path = pathlib.Path(path) if path else None
         self.direct = direct
+        self.sender_account = (sender_account or "").strip()
+        self.self_fallback_receiver = (self_fallback_receiver or "").strip()
+        if bool(self.sender_account) != bool(self.self_fallback_receiver):
+            raise ValueError(
+                "WeLink sender and self-fallback receiver must be configured together"
+            )
+        if (
+            self.sender_account
+            and self.sender_account.casefold() == self.self_fallback_receiver.casefold()
+        ):
+            raise ValueError("WeLink self-fallback receiver must differ from sender account")
         self.mapping: Dict[str, str] = {}
 
     def refresh(self) -> None:
@@ -67,8 +84,16 @@ class RecipientDirectory:
 
     def resolve(self, author: str) -> Optional[str]:
         if author in self.mapping:
-            return self.mapping[author]
-        return author if self.direct and author else None
+            receiver = self.mapping[author]
+        else:
+            receiver = author if self.direct and author else None
+        if (
+            receiver
+            and self.sender_account
+            and receiver.casefold() == self.sender_account.casefold()
+        ):
+            return self.self_fallback_receiver
+        return receiver
 
 
 class MonitorService:

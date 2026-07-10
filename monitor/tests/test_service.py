@@ -135,6 +135,62 @@ class MonitorServiceTest(unittest.TestCase):
                 self.assertEqual(1, len(snapshots))
                 self.assertEqual("taichu/pr-build", snapshots[0].failures[0].context)
 
+    def test_sender_self_recipient_is_routed_to_configured_fallback(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            mapping = pathlib.Path(temp_dir) / "recipients.json"
+            mapping.write_text('{"w00123": "y00000001"}', encoding="utf-8")
+            client = FakeGiteaClient()
+            sender = SequenceSender(["success"])
+            store = MonitorStore(pathlib.Path(temp_dir) / "state.sqlite3")
+            service = MonitorService(
+                client=client,
+                store=store,
+                sender=sender,
+                recipients=RecipientDirectory(
+                    path=mapping,
+                    direct=False,
+                    sender_account="y00000001",
+                    self_fallback_receiver="y00000002",
+                ),
+                clock=Clock(
+                    "2026-07-10T10:05:00+08:00",
+                    "2026-07-10T10:08:00+08:00",
+                ),
+            )
+            with store:
+                service.poll_once()
+                client.statuses = [
+                    {
+                        "id": 2,
+                        "context": "taichu/pr-build",
+                        "state": "failure",
+                        "description": "new failure",
+                        "updated_at": "2026-07-10T10:06:00+08:00",
+                    }
+                ]
+
+                report = service.poll_once()
+
+                self.assertEqual(1, report.delivered)
+                self.assertEqual("y00000002", sender.calls[0][0])
+                self.assertEqual("y00000002", store.list_outbox()[0].receiver)
+
+    def test_self_fallback_cannot_equal_sender_account(self):
+        with self.assertRaisesRegex(ValueError, "must differ"):
+            RecipientDirectory(
+                sender_account="y00000001",
+                self_fallback_receiver="Y00000001",
+            )
+
+    def test_self_fallback_and_sender_must_be_configured_together(self):
+        for values in (
+            {"sender_account": "y00000001"},
+            {"self_fallback_receiver": "y00000002"},
+        ):
+            with self.subTest(values=values):
+                with self.assertRaisesRegex(ValueError, "configured together"):
+                    RecipientDirectory(**values)
+
     def test_failed_delivery_retries_from_durable_outbox(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             client = FakeGiteaClient()
