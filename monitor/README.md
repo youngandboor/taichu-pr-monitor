@@ -2,6 +2,8 @@
 
 这个服务每 3 分钟读取 `SystemAgentDev/TaiChu` 的全部开放 PR，沿用 Android 端的五门禁判定和通知去重规则，将新失败摘要发送给 PR 提交人。
 
+第一次在内网 Windows 部署时，请直接按照 [`INTRANET_WINDOWS_GUIDE.md`](INTRANET_WINDOWS_GUIDE.md) 的零基础步骤执行，不需要先读完本文。
+
 ## 当前行为
 
 - 只监控 `https://taichu.fun/gitea/SystemAgentDev/TaiChu/pulls` 下的开放 PR。
@@ -92,6 +94,8 @@ python3 -m monitor --recipients monitor/recipients.json
 账号必须用 JSON 字符串，避免工号前导零丢失。
 
 ## 内网 Windows 验证
+
+完整的首次安装、PAT 设置、基线、持续运行、验收和故障排查流程见 [`内网 Windows 使用指南（零基础一步一步版）`](INTRANET_WINDOWS_GUIDE.md)。下面只保留熟悉环境后的命令速查。
 
 在安装并按内部文档登录好 `welink-cli` 后：
 
