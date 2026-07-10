@@ -97,7 +97,7 @@ def dashboard_payload(
     outbox = list(reversed(store.list_outbox()))[:200]
     scan = store.latest_scan()
     attention_statuses = {"failed", "dead", "uncertain", "unmapped"}
-    pending_statuses = {"pending", "failed", "unmapped"}
+    pending_statuses = {"pending", "failed", "dead", "uncertain", "unmapped"}
     failing_prs = sum(1 for snapshot in snapshots if snapshot.failures)
     delivery_attention = sum(1 for item in outbox if item.status in attention_statuses)
     pending_delivery = sum(1 for item in outbox if item.status in pending_statuses)

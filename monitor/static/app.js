@@ -229,7 +229,7 @@ function renderPullRequests() {
 
 function renderOutbox() {
   const attention = new Set(["failed", "dead", "uncertain", "unmapped"]);
-  const pending = new Set(["pending", "failed", "unmapped"]);
+  const pending = new Set(["pending", "failed", "dead", "uncertain", "unmapped"]);
   let items = state.data.outbox;
   if (state.outboxFilter === "attention") items = items.filter((item) => attention.has(item.status));
   if (state.outboxFilter === "pending") items = items.filter((item) => pending.has(item.status));
