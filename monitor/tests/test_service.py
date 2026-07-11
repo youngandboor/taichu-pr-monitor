@@ -702,7 +702,10 @@ class MonitorServiceTest(unittest.TestCase):
                 sender.calls[0][1],
             )
             self.assertEqual(
-                "[TaiChu PR 7] 恭喜，Merge 已成功 "
+                "🎉🎊 [TaiChu PR 7] Merge 成功啦！"
+                "这一关真的不容易，反复排障、耐心等待和一次次坚持都没有白费。"
+                "所有门禁终于全部通过，恭喜顺利合入！"
+                "辛苦了，为你鼓掌，这一刻值得好好庆祝！ 🥳✨🏆 "
                 "【Taichu PRbot 自动发送，回复TD退订】 "
                 "查看 https://taichu.fun/gitea/SystemAgentDev/TaiChu/pulls/7",
                 sender.calls[1][1],

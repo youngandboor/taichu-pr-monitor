@@ -18,9 +18,13 @@ class WeLinkProbeTest(unittest.TestCase):
         messages = build_probe_messages("2026-07-11T12:00:00+00:00")
 
         self.assertEqual(set(PROBE_CASES), set(messages))
-        for name in ("single-line", "url-last", "long-single-line"):
+        for name in ("single-line", "merge-success", "url-last", "long-single-line"):
             self.assertNotIn("\n", messages[name])
         self.assertGreater(len(messages["multi-line"].splitlines()), 1)
+        self.assertIn("🎉🎊", messages["merge-success"])
+        self.assertIn("🥳✨🏆", messages["merge-success"])
+        self.assertIn("一次次坚持都没有白费", messages["merge-success"])
+        self.assertTrue(messages["merge-success"].endswith(DEFAULT_PR_URL))
         self.assertTrue(messages["url-last"].endswith(DEFAULT_PR_URL))
         self.assertNotIn("；【Taichu PRbot", messages["url-last"])
         self.assertNotIn("退订】；", messages["url-last"])
