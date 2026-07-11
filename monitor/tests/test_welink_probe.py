@@ -22,6 +22,8 @@ class WeLinkProbeTest(unittest.TestCase):
             self.assertNotIn("\n", messages[name])
         self.assertGreater(len(messages["multi-line"].splitlines()), 1)
         self.assertTrue(messages["url-last"].endswith(DEFAULT_PR_URL))
+        self.assertNotIn("；【Taichu PRbot", messages["url-last"])
+        self.assertNotIn("退订】；", messages["url-last"])
         self.assertFalse(messages["url-followed-by-text"].endswith(DEFAULT_PR_URL))
         self.assertIn(DEFAULT_PR_URL, messages["url-followed-by-text"])
         self.assertTrue(messages["long-single-line"].endswith(DEFAULT_PR_URL))

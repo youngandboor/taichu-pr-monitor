@@ -400,11 +400,11 @@ class MonitorService:
 
 
 def format_message(snapshot: PrSnapshot, failures, merge_success: bool = False) -> str:
-    footer = "【Taichu PRbot 自动发送，回复TD退订】；"
+    footer = "【Taichu PRbot 自动发送，回复TD退订】"
     if merge_success:
         return (
-            f"[TaiChu PR {snapshot.number}] 恭喜，Merge 已成功；"
-            f"{footer}查看 {snapshot.url}"
+            f"[TaiChu PR {snapshot.number}] 恭喜，Merge 已成功 "
+            f"{footer} 查看 {snapshot.url}"
         )
 
     problems = "；".join(
@@ -412,8 +412,8 @@ def format_message(snapshot: PrSnapshot, failures, merge_success: bool = False) 
         for failure in failures
     )
     return (
-        f"[TaiChu PR {snapshot.number}] 发现问题：{problems}；"
-        f"{footer}查看 {snapshot.url}"
+        f"[TaiChu PR {snapshot.number}] 发现问题：{problems} "
+        f"{footer} 查看 {snapshot.url}"
     )
 
 

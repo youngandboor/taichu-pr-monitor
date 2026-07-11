@@ -31,8 +31,8 @@ def build_probe_messages(
     return {
         "single-line": f"[TaiChu PRbot 格式测试] 单行纯文本；时间 {stamp}",
         "url-last": (
-            "[TaiChu PR 1111] 发现问题：taichu/pr-build：消息格式测试；"
-            "【Taichu PRbot 自动发送，回复TD退订】；查看 "
+            "[TaiChu PR 1111] 发现问题：taichu/pr-build：消息格式测试 "
+            "【Taichu PRbot 自动发送，回复TD退订】 查看 "
             f"{pr_url}"
         ),
         "url-followed-by-text": (

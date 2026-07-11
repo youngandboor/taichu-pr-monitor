@@ -129,8 +129,8 @@ class MonitorServiceTest(unittest.TestCase):
         self.assertEqual(
             "[TaiChu PR 1111] 发现问题："
             "protected-file-approval：approval missing；"
-            "taichu/pr-build：compile error in module foo；"
-            "【Taichu PRbot 自动发送，回复TD退订】；"
+            "taichu/pr-build：compile error in module foo "
+            "【Taichu PRbot 自动发送，回复TD退订】 "
             "查看 https://taichu.fun/gitea/SystemAgentDev/TaiChu/pulls/1111",
             message,
         )
@@ -176,8 +176,8 @@ class MonitorServiceTest(unittest.TestCase):
         self.assertEqual(
             "[TaiChu PR 1329] 发现问题："
             "taichu/codex-pr-review：发现 2 个 P0/P1 原则问题；"
-            "taichu/pr-build：Node B/non_device/rust-workspace 编译失败（exit 101）；"
-            "【Taichu PRbot 自动发送，回复TD退订】；"
+            "taichu/pr-build：Node B/non_device/rust-workspace 编译失败（exit 101） "
+            "【Taichu PRbot 自动发送，回复TD退订】 "
             "查看 https://taichu.fun/gitea/SystemAgentDev/TaiChu/pulls/1329",
             message,
         )
@@ -295,8 +295,8 @@ class MonitorServiceTest(unittest.TestCase):
                 self.assertEqual("w00123", sender.calls[0][0])
                 self.assertEqual(
                     "[TaiChu PR 7] 发现问题：taichu/pr-build："
-                    "compile error in module foo；"
-                    "【Taichu PRbot 自动发送，回复TD退订】；"
+                    "compile error in module foo "
+                    "【Taichu PRbot 自动发送，回复TD退订】 "
                     "查看 https://taichu.fun/gitea/SystemAgentDev/TaiChu/pulls/7",
                     sender.calls[0][1],
                 )
@@ -696,14 +696,14 @@ class MonitorServiceTest(unittest.TestCase):
             self.assertEqual(2, len(sender.calls))
             self.assertEqual(
                 "[TaiChu PR 7] 发现问题：taichu/dev-cloud-preflight："
-                "missing cloud artifact；"
-                "【Taichu PRbot 自动发送，回复TD退订】；"
+                "missing cloud artifact "
+                "【Taichu PRbot 自动发送，回复TD退订】 "
                 "查看 https://taichu.fun/gitea/SystemAgentDev/TaiChu/pulls/7",
                 sender.calls[0][1],
             )
             self.assertEqual(
-                "[TaiChu PR 7] 恭喜，Merge 已成功；"
-                "【Taichu PRbot 自动发送，回复TD退订】；"
+                "[TaiChu PR 7] 恭喜，Merge 已成功 "
+                "【Taichu PRbot 自动发送，回复TD退订】 "
                 "查看 https://taichu.fun/gitea/SystemAgentDev/TaiChu/pulls/7",
                 sender.calls[1][1],
             )
