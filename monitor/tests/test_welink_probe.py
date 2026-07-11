@@ -22,6 +22,7 @@ class WeLinkProbeTest(unittest.TestCase):
             self.assertNotIn("\n", messages[name])
         self.assertGreater(len(messages["multi-line"].splitlines()), 1)
         self.assertIn("PR MERGED 👑", messages["merge-success"])
+        self.assertIn("跨越数天的硬仗！2733 行变更", messages["merge-success"])
         self.assertIn("真正的核心战力，致敬 🫡", messages["merge-success"])
         self.assertNotIn("（变更 ", messages["merge-success"])
         self.assertNotIn(" 行 · 历时 ", messages["merge-success"])
