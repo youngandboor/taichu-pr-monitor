@@ -174,33 +174,50 @@ class MonitorServiceTest(unittest.TestCase):
         line_samples = (499, 500, 1500, 2501)
         expected = (
             (
-                ("Merge Successful 🔪", "老医生的刀法"),
-                ("PR Merged 🚀", "机器跑得都没你脑子转得快"),
-                ("Merged ⚡", "Review 居然挑不出什么毛病"),
-                ("Merge Complete 🤯", "单兵突击能力太硬核"),
+                ("Merge Successful 🔪", "一天搞定 {row_count} 行代码"),
+                ("PR Merged 🚀", "一天内输出 {row_count} 行代码"),
+                ("Merged ⚡", "一天爆肝完成 {row_count} 行高质量代码"),
+                ("Merge Complete 🤯", "24 小时撸出 {row_count} 行代码"),
             ),
             (
-                ("Code Integrated 💎", "并发和边界"),
-                ("Merge Successful 🛠️", "团队很安心"),
-                ("PR Merged 🚢", "给后续省了不少事"),
-                ("Merged 🚀", "提振士气"),
+                ("Code Integrated 💎", "两天时间打磨 {row_count} 行核心逻辑"),
+                (
+                    "Merge Successful 🛠️",
+                    "两天战术攻坚，{row_count} 行代码顺利合入",
+                ),
+                ("PR Merged 🚢", "两天落地 {row_count} 行变更"),
+                ("Merged 🚀", "短短两天顶住压力扛下 {row_count} 行变更"),
             ),
             (
-                ("Finally Merged 💣", "深水雷"),
-                ("Merge Successful 🛡️", "最终方案非常优雅"),
-                ("PR Merged 🛠️", "心肺复苏"),
-                ("Merge Complete 🎉", "硬仗打赢了"),
+                ("Finally Merged 💣", "最后把解法收进 {row_count} 行代码"),
+                (
+                    "Merge Successful 🛡️",
+                    "核心链路累计 {row_count} 行变更顺利合入",
+                ),
+                (
+                    "PR Merged 🛠️",
+                    "历时三天的拉锯，{row_count} 行变更终于落地",
+                ),
+                ("Merge Complete 🎉", "三天高强度作战，扛下 {row_count} 行变更"),
             ),
             (
-                ("Finally Merged 🧗", "四两拨千斤"),
-                ("Merge Successful 🏆", "长线抗压"),
-                ("Approved & Merged 🚢", "大山搬平了"),
-                ("PR MERGED 👑", "真正的核心战力"),
+                ("Finally Merged 🧗", "最后浓缩成 {row_count} 行精妙的解法"),
+                ("Merge Successful 🏆", "才换来 {row_count} 行代码平稳落地"),
+                (
+                    "Approved & Merged 🚢",
+                    "跨越数天的硬仗！{row_count} 行核心重构终于合入",
+                ),
+                (
+                    "PR MERGED 👑",
+                    "跨越数天的硬仗！{row_count} 行变更终于顺利合入",
+                ),
             ),
         )
 
         for duration_days, duration_cases in enumerate(expected, start=1):
-            for changed_lines, (title, anchor) in zip(line_samples, duration_cases):
+            for changed_lines, (title, anchor_template) in zip(
+                line_samples, duration_cases
+            ):
                 with self.subTest(days=duration_days, lines=changed_lines):
                     message = format_message(
                         snapshot,
@@ -212,7 +229,15 @@ class MonitorServiceTest(unittest.TestCase):
                     self.assertTrue(
                         message.startswith(f"[TaiChu PR {snapshot.number}] {title} ")
                     )
-                    self.assertIn(anchor, message)
+                    row_count = str(changed_lines)
+                    self.assertIn(
+                        anchor_template.format(row_count=row_count),
+                        message,
+                    )
+                    self.assertEqual(1, message.count(f"{row_count} 行"))
+                    if changed_lines >= 1000:
+                        self.assertNotIn(f"{changed_lines:,} 行", message)
+                    self.assertNotIn("{row_count}", message)
                     self.assertNotIn("（变更 ", message)
                     self.assertNotIn(" 行 · 历时 ", message)
                     self.assertIn("【Taichu PRbot 自动发送，回复TD退订】", message)
@@ -258,6 +283,7 @@ class MonitorServiceTest(unittest.TestCase):
                     merge_metrics=MergeMetrics(changed_lines, 1),
                 )
                 self.assertIn(expected_title, message)
+                self.assertIn(f"{changed_lines} 行", message)
 
     def test_merge_metrics_use_diff_lines_and_notification_time_boundaries(self):
         pull = {
@@ -904,7 +930,7 @@ class MonitorServiceTest(unittest.TestCase):
             )
             self.assertEqual(
                 "[TaiChu PR 7] Merge Successful 🔪 "
-                "小几百行代码一天搞定，改得非常准。不需要冗长废话就能把痛点切掉，"
+                "一天搞定 120 行代码，改得非常准。不需要冗长废话就能把痛点切掉，"
                 "老医生的刀法。代码已上膛，干得漂亮！🍻 "
                 "【Taichu PRbot 自动发送，回复TD退订】 "
                 "查看 https://taichu.fun/gitea/SystemAgentDev/TaiChu/pulls/7",
@@ -1164,6 +1190,8 @@ class MonitorServiceTest(unittest.TestCase):
                 self.assertEqual(sender.calls[0][1], sender.calls[1][1])
                 self.assertIn("Merge Successful 🔪", sender.calls[1][1])
                 self.assertIn("老医生的刀法", sender.calls[1][1])
+                self.assertIn("一天搞定 120 行代码", sender.calls[1][1])
+                self.assertNotIn("3100 行", sender.calls[1][1])
                 self.assertNotIn("（变更 ", sender.calls[1][1])
                 self.assertEqual("sent", store.list_outbox()[0].status)
 
