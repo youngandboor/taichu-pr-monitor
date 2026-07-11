@@ -66,6 +66,12 @@ class GiteaClient:
             require_complete=True,
         )
 
+    def get_pull(self, owner: str, repo: str, number: int) -> Dict[str, Any]:
+        payload = self.api_get(f"/repos/{owner}/{repo}/pulls/{int(number)}")
+        if not isinstance(payload, dict):
+            raise GiteaApiError("Gitea API returned an invalid pull request response")
+        return payload
+
     def get_issue_comments(
         self,
         owner: str,

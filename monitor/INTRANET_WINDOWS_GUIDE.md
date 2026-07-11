@@ -11,7 +11,7 @@
 - 第一次运行只建立基线，不补发历史问题；
 - 每轮 Build 或 Merge 失败最多私聊一次；
 - Build 三门禁成功后自动评论 `/ci merge`，不发成功私聊；
-- Merge 成功后向 PR 提交人发送一次祝贺消息；
+- Merge 成功后按 PR Diff 变更量与持续时间选择祝贺消息，并向提交人发送一次；
 - 从 Gitea `full_name` 自动生成“姓氏拼音首字母 + 8 位工号”的 WeLink W3 账号；
 - 浏览器可在 `http://127.0.0.1:8790` 查看完整发送记录、磁盘占用并动态设置免打扰工号。
 
@@ -133,6 +133,8 @@ Command discovery passed.
 ```
 
 支持 `single-line`、`merge-success`、`url-last`、`url-followed-by-text`、`long-single-line`、`multi-line` 和 `all`。`merge-success` 用于确认庆祝表情和成功文案在 WeLink 客户端中的显示；`url-last` 与 `url-followed-by-text` 使用同类正文，可直接对比 URL 后有无文字对链接识别的影响；`all` 会连续发送六条测试消息。每条都会显示字符数、UTF-8 字节数、行数、URL 是否位于最后、CLI 返回码和耗时。`multi-line` 只用于复现和对照，正式 PRbot 消息仍保持单行。
+
+成功文案中的“变更行数”是 Gitea 的 `additions + deletions`，包含本次 Diff 中的代码、配置、文档及生成文件，不代表净新增代码。持续时间从 PR 的 `created_at` 计算到成功消息生成时刻；不足 24 小时按 1 天展示。只有生成 Merge 成功消息时才额外读取该 PR 详情，普通三分钟扫描不会为所有开放 PR 批量读取行数。
 
 ## 第 5 步：把 Gitea PAT 放进当前窗口
 
