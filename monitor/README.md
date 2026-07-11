@@ -12,6 +12,7 @@
 - 忽略旧 head、队列状态、构建耗时评论和旧命令之前的失败。
 - 第一次看到某个 PR 时只建立基线，不发送已有历史失败或历史成功。
 - 每个 `/ci build` 轮次最多发送一条失败消息；多个失败项合并在同一行。
+- 失败摘要按门禁提炼：Approval 取“结果”，Codex 取 P0/P1 数量或特殊阻塞原因，PR Build/Merge Gate 取结构化失败任务，Preflight 只取 FAIL 用例行；Jenkins 链接、产物和长日志不会进入私聊。
 - Build 三门禁全部成功后不发成功消息，而是在 PR 中自动评论一次 `/ci merge`；提交前会重新读取最新评论中的最新 CI 命令，若已经是 `/ci merge` 就跳过；读取或评论失败只记录 warning，不重试、不额外通知；`--dry-run` 不会发送 WeLink，也不会写入 Gitea 评论。
 - 每个 `/ci merge` 轮次最多发送一条失败消息；Merge 两门禁成功后发送一次祝贺消息。
 - 所有 WeLink 消息都是单行，PR URL 始终位于最后，避免 WeLink 错误识别链接边界。
@@ -151,6 +152,8 @@ python3 -m monitor --strict-recipients
 Set-ExecutionPolicy -Scope Process Bypass
 ./monitor/windows/verify_welink.ps1
 ./monitor/windows/verify_welink.ps1 -Send -Receiver <another-consenting-W3-account>
+./monitor/windows/test_welink_messages.ps1 -TestCase url-last
+./monitor/windows/test_welink_messages.ps1 -TestCase all -Receiver <another-consenting-W3-account> -Send
 python -m unittest discover -s monitor/tests -v
 python -m monitor --once
 python -m monitor --open-dashboard
@@ -163,7 +166,8 @@ python -m monitor --open-dashboard
 1. `send-to-user` 成功时退出码是否稳定为 `0`；
 2. 登录过期、收件人不存在和网络失败时是否返回非零退出码；
 3. CLI 卡住时进程能否在超时后被终止；
-4. WeLink 退出、锁屏和长时间运行后的登录刷新行为。
+4. 单行、长单行、URL 位于末尾、URL 后仍有文字和多行对照组在客户端中的实际显示差异。
+5. WeLink 退出、锁屏和长时间运行后的登录刷新行为。
 
 ## 状态与排障
 
