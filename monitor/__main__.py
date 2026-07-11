@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import pathlib
+import sys
 import threading
 import time
 import webbrowser
@@ -21,8 +22,10 @@ from .gitea import (
     GiteaClient,
     resolve_credential,
 )
+from .instance_lock import InstanceAlreadyRunning, InstanceLock
 from .service import MonitorService, RecipientDirectory
 from .state import MonitorStore
+from .updater import RepositoryUpdater
 from .welink import DryRunSender, WeLinkCli
 
 
@@ -129,6 +132,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="open the dashboard in the default browser at startup",
     )
     parser.add_argument(
+        "--allow-remote-dashboard-actions",
+        action="store_true",
+        help="allow dashboard management actions from non-loopback clients",
+    )
+    parser.add_argument(
+        "--dashboard-token",
+        default=os.environ.get("TAICHU_DASHBOARD_TOKEN", ""),
+        help="HTTP Basic password used to protect the dashboard",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="print would-be messages instead of invoking welink-cli",
@@ -147,18 +160,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None) -> int:
-    args = build_parser().parse_args(argv)
+    raw_args = list(sys.argv[1:] if argv is None else argv)
+    args = build_parser().parse_args(raw_args)
     logging.basicConfig(
         level=getattr(logging, args.log_level),
         format="%(asctime)s %(levelname)s %(message)s",
     )
     logger = logging.getLogger("taichu-pr-monitor")
-    store = MonitorStore(args.state_db)
-    dashboard = None
-    wake_event = threading.Event()
-    runtime = DashboardRuntime(wake_event)
-    try:
-        if args.list_outbox:
+    if args.list_outbox:
+        with MonitorStore(args.state_db) as store:
             print(
                 json.dumps(
                     [record.__dict__ for record in store.list_outbox()],
@@ -166,7 +176,34 @@ def main(argv=None) -> int:
                     indent=2,
                 )
             )
-            return 0
+        return 0
+
+    dashboard_enabled = not args.once and not args.no_dashboard
+    if (
+        dashboard_enabled
+        and args.allow_remote_dashboard_actions
+        and not args.dashboard_token
+    ):
+        logger.error(
+            "--allow-remote-dashboard-actions requires --dashboard-token or "
+            "TAICHU_DASHBOARD_TOKEN"
+        )
+        return 2
+
+    instance_lock = InstanceLock(args.state_db)
+    try:
+        instance_lock.acquire()
+    except InstanceAlreadyRunning as error:
+        logger.error("%s", error)
+        return 2
+
+    store = None
+    dashboard = None
+    restart_after_update = False
+    wake_event = threading.Event()
+    runtime = DashboardRuntime(wake_event)
+    try:
+        store = MonitorStore(args.state_db)
 
         credential = resolve_credential(args.web_base, args.owner, args.repo)
         if credential is None:
@@ -207,24 +244,63 @@ def main(argv=None) -> int:
             logger=logger,
         )
 
-        if not args.once and not args.no_dashboard:
+        if dashboard_enabled:
             dashboard = DashboardServer(
                 host=args.dashboard_host,
                 port=args.dashboard_port,
                 state_path=args.state_db,
                 runtime=runtime,
                 logger=logger,
+                allow_remote_actions=args.allow_remote_dashboard_actions,
+                access_token=args.dashboard_token,
             )
             dashboard.start()
             logger.info("dashboard available at %s", dashboard.url)
             if args.dashboard_host not in {"127.0.0.1", "localhost", "::1"}:
-                logger.warning("dashboard has no authentication; bind it only to a trusted network")
+                if args.dashboard_token:
+                    logger.warning(
+                        "dashboard is remotely reachable with HTTP Basic authentication; "
+                        "bind it only to a trusted network"
+                    )
+                else:
+                    logger.warning(
+                        "dashboard has no authentication; bind it only to a trusted network"
+                    )
+            if args.allow_remote_dashboard_actions:
+                logger.warning(
+                    "remote dashboard management actions are enabled with HTTP Basic authentication"
+                )
             if args.open_dashboard:
                 webbrowser.open(dashboard.url)
 
         while True:
+            if runtime.claim_update():
+                result = RepositoryUpdater(
+                    pathlib.Path(__file__).resolve().parents[1]
+                ).update()
+                runtime.finish_update(
+                    result.status,
+                    result.message,
+                    result.before_sha,
+                    result.after_sha,
+                )
+                if result.status == "updated":
+                    logger.info("%s", result.message)
+                    restart_after_update = True
+                    break
+                if result.status == "failed":
+                    logger.error("%s", result.message)
+                else:
+                    logger.info("%s", result.message)
+
+            if runtime.is_paused():
+                wake_event.wait()
+                wake_event.clear()
+                continue
+
             cycle_started = time.monotonic()
-            runtime.scan_started()
+            if not runtime.scan_started():
+                continue
             try:
                 report = service.poll_once()
             finally:
@@ -252,7 +328,13 @@ def main(argv=None) -> int:
     finally:
         if dashboard is not None:
             dashboard.close()
-        store.close()
+        if store is not None:
+            store.close()
+        instance_lock.release()
+
+    if restart_after_update:
+        return _restart_monitor(raw_args, logger)
+    return 0
 
 
 def positive_int(value: str) -> int:
@@ -279,6 +361,17 @@ def non_negative_int(value: str) -> int:
 def _environment_path(name: str):
     value = os.environ.get(name)
     return pathlib.Path(value) if value else None
+
+
+def _restart_monitor(arguments, logger: logging.Logger) -> int:
+    restart_arguments = [argument for argument in arguments if argument != "--open-dashboard"]
+    command = [sys.executable, "-m", "monitor", *restart_arguments]
+    try:
+        os.execv(sys.executable, command)
+    except OSError as error:
+        logger.error("updated successfully but could not restart monitor: %s", error)
+        return 2
+    return 0
 
 
 if __name__ == "__main__":

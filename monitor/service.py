@@ -14,9 +14,8 @@ from typing import Callable, Dict, List, Optional
 
 from .core import (
     PrSnapshot,
-    build_success_key,
     build_pr_snapshot,
-    failure_key,
+    exact_ci_command,
     notification_text,
     poll_tracker,
 )
@@ -195,7 +194,7 @@ class MonitorService:
                     event = self._event_for(
                         snapshot,
                         result.notifications,
-                        result.build_success,
+                        result.merge_success,
                     )
                     self.store.apply_poll(
                         snapshot.number,
@@ -203,9 +202,11 @@ class MonitorService:
                         event,
                         snapshot=snapshot,
                     )
+                    if result.request_merge_comment:
+                        self._try_comment_merge(snapshot)
                     report.scanned_prs += 1
-                    report.new_notifications += len(result.notifications) + int(
-                        result.build_success
+                    report.new_notifications += int(bool(result.notifications)) + int(
+                        result.merge_success
                     )
                 except Exception as error:
                     message = f"PR #{number or '?'} scan failed: {error}"
@@ -263,23 +264,66 @@ class MonitorService:
         self,
         snapshot: PrSnapshot,
         failures,
-        build_success: bool = False,
+        merge_success: bool = False,
     ) -> Optional[OutboxEvent]:
-        if not failures and not build_success:
+        if not failures and not merge_success:
             return None
-        keys = sorted(failure_key(snapshot, failure) for failure in failures)
-        if build_success:
-            keys.append(build_success_key(snapshot))
+        kind = "merge-success" if merge_success else f"{snapshot.latest_ci_command}:failure"
         digest = hashlib.sha256(
-            (str(snapshot.number) + "\0" + "\0".join(keys)).encode("utf-8")
+            (
+                str(snapshot.number)
+                + "\0"
+                + snapshot.latest_ci_command_key
+                + "\0"
+                + kind
+            ).encode("utf-8")
         ).hexdigest()
         return OutboxEvent(
             event_key=digest,
             pr_number=snapshot.number,
             author=snapshot.author,
-            message=format_message(snapshot, failures, build_success=build_success),
+            message=format_message(snapshot, failures, merge_success=merge_success),
             receiver_hint=snapshot.author_w3,
         )
+
+    def _try_comment_merge(self, snapshot: PrSnapshot) -> None:
+        try:
+            comments = self.client.get_issue_comments(
+                self.owner,
+                self.repo,
+                snapshot.number,
+                max_pages=self.max_comment_pages,
+            )
+        except Exception as error:
+            self.logger.warning(
+                "could not verify the latest comment on PR #%s; "
+                "skipping automatic /ci merge: %s",
+                snapshot.number,
+                error,
+            )
+            return
+
+        if _latest_ci_command(comments) == "/ci merge":
+            self.logger.info(
+                "skipping automatic /ci merge on PR #%s because the latest "
+                "CI command is already /ci merge",
+                snapshot.number,
+            )
+            return
+
+        try:
+            self.client.create_issue_comment(
+                self.owner,
+                self.repo,
+                snapshot.number,
+                "/ci merge",
+            )
+        except Exception as error:
+            self.logger.warning(
+                "could not comment /ci merge on PR #%s; this round will not retry: %s",
+                snapshot.number,
+                error,
+            )
 
     def _dispatch_outbox(self, report: PollReport) -> None:
         for record in self.store.list_dispatchable(self.max_send_attempts):
@@ -293,6 +337,21 @@ class MonitorService:
                     increment_attempt=False,
                 )
                 report.unmapped += 1
+                continue
+            original_recipient_opted_out = bool(
+                record.recipient_employee_number
+                and self.store.is_recipient_opted_out(
+                    record.recipient_employee_number
+                )
+            )
+            if original_recipient_opted_out or self.store.is_recipient_opted_out(receiver):
+                self.store.update_delivery(
+                    record.id,
+                    "suppressed",
+                    receiver,
+                    "notification suppressed by recipient preference",
+                    increment_attempt=False,
+                )
                 continue
             result = self.sender.send(receiver, record.message)
             if result.status == "success":
@@ -330,28 +389,22 @@ class MonitorService:
             self.logger.error("WeLink delivery failed for outbox #%s", record.id)
 
 
-def format_message(snapshot: PrSnapshot, failures, build_success: bool = False) -> str:
-    headline = (
-        f"[TaiChu PR #{snapshot.number}] CI Build 已通过"
-        if build_success
-        else f"[TaiChu PR #{snapshot.number}] 发现 {len(failures)} 个新问题"
+def format_message(snapshot: PrSnapshot, failures, merge_success: bool = False) -> str:
+    footer = "【Taichu PRbot 自动发送，回复TD退订】；"
+    if merge_success:
+        return (
+            f"[TaiChu PR {snapshot.number}] 恭喜，Merge 已成功；"
+            f"{footer}查看 {snapshot.url}"
+        )
+
+    problems = "；".join(
+        f"{failure.context}：{notification_text(failure.summary)}"
+        for failure in failures
     )
-    lines = [
-        headline,
-        f"标题：{snapshot.title or '(无标题)'}",
-        f"提交人：{snapshot.author}",
-        f"Head：{snapshot.head_sha[:7]}",
-    ]
-    if build_success and snapshot.pr_build_summary:
-        lines.append(f"结果：{notification_text(snapshot.pr_build_summary)}")
-    if build_success and failures:
-        lines.append(f"同时发现 {len(failures)} 个新问题：")
-    for failure in failures:
-        lines.append(f"- {failure.context}：{notification_text(failure.summary)}")
-    if build_success:
-        lines.append("下一步：打开 PR，确认后评论 /ci merge")
-    lines.append(f"查看：{snapshot.url}")
-    return "\n".join(lines)
+    return (
+        f"[TaiChu PR {snapshot.number}] 发现问题：{problems}；"
+        f"{footer}查看 {snapshot.url}"
+    )
 
 
 def _delivery_error(result) -> str:
@@ -365,6 +418,40 @@ def _pr_number(pr) -> int:
         return int(pr.get("number") or 0)
     except (AttributeError, TypeError, ValueError):
         return 0
+
+
+def _latest_ci_command(comments) -> str:
+    latest_command = ""
+    latest_key = ((0, 0.0, ""), -1, -1)
+    for index, comment in enumerate(comments):
+        if not isinstance(comment, dict):
+            continue
+        command = exact_ci_command(comment.get("body"))
+        if not command:
+            continue
+        try:
+            comment_id = int(comment.get("id") or -1)
+        except (TypeError, ValueError):
+            comment_id = -1
+        key = (_comment_created_key(comment.get("created_at")), comment_id, index)
+        if key >= latest_key:
+            latest_command = command
+            latest_key = key
+    return latest_command
+
+
+def _comment_created_key(value):
+    raw = str(value or "").strip()
+    if not raw:
+        return (0, 0.0, "")
+    normalized = raw[:-1] + "+00:00" if raw.endswith("Z") else raw
+    try:
+        parsed = dt.datetime.fromisoformat(normalized)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=dt.timezone.utc)
+        return (1, parsed.timestamp(), raw)
+    except ValueError:
+        return (0, 0.0, raw)
 
 
 def _utc_now() -> str:

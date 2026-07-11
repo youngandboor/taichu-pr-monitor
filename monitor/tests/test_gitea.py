@@ -1,3 +1,4 @@
+import json
 import unittest
 import urllib.error
 from unittest import mock
@@ -138,6 +139,55 @@ class GiteaClientTest(unittest.TestCase):
         self.assertEqual("taichu/pr-build", statuses[0]["context"])
         self.assertIn("/statuses/abc123", client.paths[0])
         self.assertIn("/commits/abc123/status", client.paths[1])
+
+    def test_create_issue_comment_posts_ci_merge_once(self):
+        client = GiteaClient(
+            "https://taichu.fun/gitea/api/v1",
+            credential=None,
+            timeout_seconds=75,
+            max_retries=4,
+        )
+        with mock.patch(
+            "monitor.gitea.urllib.request.urlopen",
+            return_value=FakeHttpResponse({"id": 91, "body": "/ci merge"}),
+        ) as urlopen:
+            comment = client.create_issue_comment(
+                "SystemAgentDev",
+                "TaiChu",
+                7,
+                "/ci merge",
+            )
+
+        request = urlopen.call_args.args[0]
+        self.assertEqual(91, comment["id"])
+        self.assertEqual("POST", request.get_method())
+        self.assertTrue(request.full_url.endswith("/issues/7/comments"))
+        self.assertEqual({"body": "/ci merge"}, json.loads(request.data.decode("utf-8")))
+        self.assertEqual("application/json", request.headers["Content-type"])
+        self.assertEqual(1, urlopen.call_count)
+
+    def test_create_issue_comment_never_retries_network_failure(self):
+        client = GiteaClient(
+            "https://taichu.fun/gitea/api/v1",
+            credential=None,
+            max_retries=5,
+            retry_backoff_seconds=0.25,
+        )
+        timed_out = urllib.error.URLError(TimeoutError("timed out"))
+        with mock.patch(
+            "monitor.gitea.urllib.request.urlopen",
+            side_effect=timed_out,
+        ) as urlopen, mock.patch("monitor.gitea.time.sleep") as sleep:
+            with self.assertRaisesRegex(GiteaApiError, "request failed"):
+                client.create_issue_comment(
+                    "SystemAgentDev",
+                    "TaiChu",
+                    7,
+                    "/ci merge",
+                )
+
+        self.assertEqual(1, urlopen.call_count)
+        sleep.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@ import unittest
 from monitor.core import (
     DEFAULT_POLL_INTERVAL_SECONDS,
     GateFailure,
+    GateResult,
     PrSnapshot,
     TrackerState,
     build_pr_snapshot,
@@ -142,6 +143,14 @@ class GateLogicTest(unittest.TestCase):
             ["taichu/codex-pr-review", "taichu/dev-cloud-preflight"],
             [failure.context for failure in snapshot.failures],
         )
+        self.assertEqual(
+            [
+                "taichu/codex-pr-review",
+                "taichu/pr-build",
+                "taichu/dev-cloud-preflight",
+            ],
+            [result.context for result in snapshot.gate_results],
+        )
 
     def test_notification_text_strips_markup_and_truncates(self):
         text = "<!--hidden-->## **失败摘要** <b>boom</b> " + ("x" * 200)
@@ -166,9 +175,7 @@ class TrackerTest(unittest.TestCase):
         command="/ci build",
         command_at="2026-07-10T10:00:00+08:00",
         failures=(),
-        build_state="",
-        build_at="",
-        build_summary="",
+        gate_results=(),
     ):
         return PrSnapshot(
             number=7,
@@ -181,48 +188,150 @@ class TrackerTest(unittest.TestCase):
             latest_ci_command_key=command_key,
             scanned_at=scanned_at,
             failures=tuple(failures),
-            pr_build_state=build_state,
-            pr_build_updated_at=build_at,
-            pr_build_summary=build_summary,
+            gate_results=tuple(gate_results),
         )
 
-    def test_first_poll_baselines_historical_build_success(self):
+    def gate(self, context, state, updated_at, summary=""):
+        return GateResult(context, state, updated_at, summary or state)
+
+    def build_successes(self, updated_at):
+        return (
+            self.gate("protected-file-approval", "success", updated_at),
+            self.gate("taichu/codex-pr-review", "success", updated_at),
+            self.gate("taichu/pr-build", "success", updated_at),
+        )
+
+    def merge_successes(self, updated_at):
+        return (
+            self.gate("taichu/dev-cloud-preflight", "success", updated_at),
+            self.gate("ci/merge-gate", "success", updated_at),
+        )
+
+    def test_first_poll_baselines_historical_build_completion(self):
         snapshot = self.snapshot(
             scanned_at="2026-07-10T10:05:00+08:00",
-            build_state="success",
-            build_at="2026-07-10T10:02:00+08:00",
-            build_summary="build success",
+            gate_results=self.build_successes("2026-07-10T10:02:00+08:00"),
         )
 
         result = poll_tracker(TrackerState.empty(), snapshot)
 
-        self.assertFalse(result.build_success)
+        self.assertFalse(result.request_merge_comment)
         self.assertTrue(result.state.initialized)
         self.assertEqual(1, len(result.state.notified_failure_keys))
 
-    def test_new_build_success_after_watermark_alerts_once(self):
+    def test_new_build_completion_requests_merge_comment_once(self):
         baseline = poll_tracker(
             TrackerState.empty(),
             self.snapshot(
                 scanned_at="2026-07-10T10:05:00+08:00",
-                build_state="pending",
-                build_at="2026-07-10T10:04:00+08:00",
             ),
         ).state
         changed = self.snapshot(
             scanned_at="2026-07-10T10:08:00+08:00",
-            build_state="success",
-            build_at="2026-07-10T10:06:00+08:00",
-            build_summary="build success",
+            gate_results=self.build_successes("2026-07-10T10:06:00+08:00"),
         )
 
         first = poll_tracker(baseline, changed)
         second = poll_tracker(first.state, changed)
 
-        self.assertTrue(first.build_success)
-        self.assertFalse(second.build_success)
+        self.assertTrue(first.request_merge_comment)
+        self.assertFalse(first.merge_success)
+        self.assertFalse(second.request_merge_comment)
 
-    def test_parser_upgrade_does_not_announce_old_build_success(self):
+    def test_preconditions_may_pass_before_command_when_pr_build_is_new(self):
+        baseline = poll_tracker(
+            TrackerState.empty(),
+            self.snapshot(scanned_at="2026-07-10T10:05:00+08:00"),
+        ).state
+        changed = self.snapshot(
+            scanned_at="2026-07-10T10:08:00+08:00",
+            gate_results=(
+                self.gate(
+                    "protected-file-approval",
+                    "success",
+                    "2026-07-10T09:50:00+08:00",
+                ),
+                self.gate(
+                    "taichu/codex-pr-review",
+                    "success",
+                    "2026-07-10T09:55:00+08:00",
+                ),
+                self.gate(
+                    "taichu/pr-build",
+                    "success",
+                    "2026-07-10T10:06:00+08:00",
+                ),
+            ),
+        )
+
+        result = poll_tracker(baseline, changed)
+
+        self.assertTrue(result.request_merge_comment)
+
+    def test_late_precondition_success_completes_build_after_pr_build(self):
+        baseline = poll_tracker(
+            TrackerState.empty(),
+            self.snapshot(
+                scanned_at="2026-07-10T10:06:00+08:00",
+                gate_results=(
+                    self.gate(
+                        "protected-file-approval",
+                        "pending",
+                        "2026-07-10T10:04:00+08:00",
+                    ),
+                    self.gate(
+                        "taichu/codex-pr-review",
+                        "success",
+                        "2026-07-10T09:55:00+08:00",
+                    ),
+                    self.gate(
+                        "taichu/pr-build",
+                        "success",
+                        "2026-07-10T10:05:00+08:00",
+                    ),
+                ),
+            ),
+        ).state
+        completed = self.snapshot(
+            scanned_at="2026-07-10T10:09:00+08:00",
+            gate_results=(
+                self.gate(
+                    "protected-file-approval",
+                    "success",
+                    "2026-07-10T10:08:00+08:00",
+                ),
+                self.gate(
+                    "taichu/codex-pr-review",
+                    "success",
+                    "2026-07-10T09:55:00+08:00",
+                ),
+                self.gate(
+                    "taichu/pr-build",
+                    "success",
+                    "2026-07-10T10:05:00+08:00",
+                ),
+            ),
+        )
+
+        result = poll_tracker(baseline, completed)
+
+        self.assertTrue(result.request_merge_comment)
+
+    def test_build_completion_in_same_second_as_watermark_is_not_lost(self):
+        baseline = poll_tracker(
+            TrackerState.empty(),
+            self.snapshot(scanned_at="2026-07-10T10:05:00+08:00"),
+        ).state
+        completed = self.snapshot(
+            scanned_at="2026-07-10T10:08:00+08:00",
+            gate_results=self.build_successes("2026-07-10T10:05:00+08:00"),
+        )
+
+        result = poll_tracker(baseline, completed)
+
+        self.assertTrue(result.request_merge_comment)
+
+    def test_parser_upgrade_does_not_comment_for_old_build_completion(self):
         legacy_state = TrackerState(
             "cmd-1",
             frozenset(),
@@ -231,17 +340,15 @@ class TrackerTest(unittest.TestCase):
         )
         historical_success = self.snapshot(
             scanned_at="2026-07-10T10:08:00+08:00",
-            build_state="success",
-            build_at="2026-07-10T10:02:00+08:00",
-            build_summary="historical build success",
+            gate_results=self.build_successes("2026-07-10T10:02:00+08:00"),
         )
 
         result = poll_tracker(legacy_state, historical_success)
 
-        self.assertFalse(result.build_success)
+        self.assertFalse(result.request_merge_comment)
         self.assertEqual(1, len(result.state.notified_failure_keys))
 
-    def test_build_success_before_latest_build_command_is_ignored(self):
+    def test_build_results_before_latest_build_command_are_ignored(self):
         baseline = poll_tracker(
             TrackerState.empty(),
             self.snapshot(scanned_at="2026-07-10T10:05:00+08:00"),
@@ -250,15 +357,14 @@ class TrackerTest(unittest.TestCase):
             scanned_at="2026-07-10T10:12:00+08:00",
             command_key="cmd-2",
             command_at="2026-07-10T10:10:00+08:00",
-            build_state="success",
-            build_at="2026-07-10T10:09:00+08:00",
+            gate_results=self.build_successes("2026-07-10T10:09:00+08:00"),
         )
 
         result = poll_tracker(baseline, changed)
 
-        self.assertFalse(result.build_success)
+        self.assertFalse(result.request_merge_comment)
 
-    def test_build_success_is_not_announced_for_latest_merge_command(self):
+    def test_build_results_are_not_processed_during_merge_stage(self):
         baseline = poll_tracker(
             TrackerState.empty(),
             self.snapshot(scanned_at="2026-07-10T10:05:00+08:00"),
@@ -268,13 +374,13 @@ class TrackerTest(unittest.TestCase):
             command="/ci merge",
             command_key="merge-1",
             command_at="2026-07-10T10:06:00+08:00",
-            build_state="success",
-            build_at="2026-07-10T10:07:00+08:00",
+            gate_results=self.build_successes("2026-07-10T10:07:00+08:00"),
         )
 
         result = poll_tracker(baseline, changed)
 
-        self.assertFalse(result.build_success)
+        self.assertFalse(result.request_merge_comment)
+        self.assertFalse(result.merge_success)
 
     def test_first_poll_builds_baseline_without_historical_alerts(self):
         snapshot = self.snapshot(
@@ -288,21 +394,135 @@ class TrackerTest(unittest.TestCase):
         self.assertTrue(result.state.initialized)
         self.assertEqual(1, len(result.state.notified_failure_keys))
 
-    def test_new_failure_after_watermark_alerts_once(self):
+    def test_build_round_combines_current_failures_and_notifies_only_once(self):
         baseline = poll_tracker(
             TrackerState.empty(),
             self.snapshot(scanned_at="2026-07-10T10:05:00+08:00"),
         ).state
         changed = self.snapshot(
             scanned_at="2026-07-10T10:08:00+08:00",
-            failures=(GateFailure("taichu/pr-build", "2026-07-10T10:06:00+08:00", "build failed"),),
+            failures=(
+                GateFailure(
+                    "protected-file-approval",
+                    "2026-07-10T10:06:00+08:00",
+                    "approval failed",
+                ),
+                GateFailure(
+                    "taichu/pr-build",
+                    "2026-07-10T10:07:00+08:00",
+                    "build failed",
+                ),
+                GateFailure(
+                    "ci/merge-gate",
+                    "2026-07-10T10:07:00+08:00",
+                    "wrong stage",
+                ),
+            ),
         )
 
         first = poll_tracker(baseline, changed)
-        second = poll_tracker(first.state, changed)
+        later = self.snapshot(
+            scanned_at="2026-07-10T10:11:00+08:00",
+            failures=changed.failures
+            + (
+                GateFailure(
+                    "taichu/codex-pr-review",
+                    "2026-07-10T10:09:00+08:00",
+                    "review failed later",
+                ),
+            ),
+        )
+        second = poll_tracker(first.state, later)
 
-        self.assertEqual(["taichu/pr-build"], [item.context for item in first.notifications])
+        self.assertEqual(
+            ["protected-file-approval", "taichu/pr-build"],
+            [item.context for item in first.notifications],
+        )
         self.assertEqual((), second.notifications)
+
+    def test_new_build_command_reports_an_existing_precondition_failure_once(self):
+        baseline = poll_tracker(
+            TrackerState.empty(),
+            self.snapshot(scanned_at="2026-07-10T10:05:00+08:00"),
+        ).state
+        changed = self.snapshot(
+            scanned_at="2026-07-10T10:08:00+08:00",
+            command_key="cmd-2",
+            command_at="2026-07-10T10:06:00+08:00",
+            failures=(
+                GateFailure(
+                    "protected-file-approval",
+                    "2026-07-10T09:50:00+08:00",
+                    "approval still missing",
+                ),
+            ),
+        )
+
+        first = poll_tracker(baseline, changed)
+        repeated = poll_tracker(first.state, changed)
+
+        self.assertEqual(
+            ["protected-file-approval"],
+            [item.context for item in first.notifications],
+        )
+        self.assertEqual((), repeated.notifications)
+
+    def test_new_build_does_not_reuse_an_old_pr_build_failure(self):
+        baseline = poll_tracker(
+            TrackerState.empty(),
+            self.snapshot(scanned_at="2026-07-10T10:05:00+08:00"),
+        ).state
+        changed = self.snapshot(
+            scanned_at="2026-07-10T10:12:00+08:00",
+            command_key="cmd-2",
+            command_at="2026-07-10T10:10:00+08:00",
+            failures=(
+                GateFailure(
+                    "taichu/pr-build",
+                    "2026-07-10T10:09:00+08:00",
+                    "previous build failed",
+                ),
+            ),
+        )
+
+        result = poll_tracker(baseline, changed)
+
+        self.assertEqual((), result.notifications)
+
+    def test_merge_failure_then_success_notifies_each_outcome_once(self):
+        baseline = poll_tracker(
+            TrackerState.empty(),
+            self.snapshot(scanned_at="2026-07-10T10:05:00+08:00"),
+        ).state
+        failed = self.snapshot(
+            scanned_at="2026-07-10T10:08:00+08:00",
+            command="/ci merge",
+            command_key="merge-1",
+            command_at="2026-07-10T10:06:00+08:00",
+            failures=(
+                GateFailure(
+                    "taichu/dev-cloud-preflight",
+                    "2026-07-10T10:07:00+08:00",
+                    "missing artifact",
+                ),
+            ),
+        )
+        recovered = self.snapshot(
+            scanned_at="2026-07-10T10:11:00+08:00",
+            command="/ci merge",
+            command_key="merge-1",
+            command_at="2026-07-10T10:06:00+08:00",
+            gate_results=self.merge_successes("2026-07-10T10:09:00+08:00"),
+        )
+
+        failure_result = poll_tracker(baseline, failed)
+        success_result = poll_tracker(failure_result.state, recovered)
+        repeated = poll_tracker(success_result.state, recovered)
+
+        self.assertEqual(1, len(failure_result.notifications))
+        self.assertTrue(success_result.merge_success)
+        self.assertFalse(repeated.merge_success)
+        self.assertEqual(2, len(success_result.state.notified_failure_keys))
 
     def test_old_failure_before_latest_command_is_ignored(self):
         baseline = poll_tracker(
@@ -313,7 +533,13 @@ class TrackerTest(unittest.TestCase):
             scanned_at="2026-07-10T10:12:00+08:00",
             command_key="cmd-2",
             command_at="2026-07-10T10:10:00+08:00",
-            failures=(GateFailure("ci/merge-gate", "2026-07-10T10:09:00+08:00", "old failure"),),
+            failures=(
+                GateFailure(
+                    "taichu/pr-build",
+                    "2026-07-10T10:09:00+08:00",
+                    "old failure",
+                ),
+            ),
         )
 
         result = poll_tracker(baseline, changed)
