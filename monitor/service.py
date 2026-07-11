@@ -16,6 +16,7 @@ from .core import (
     PrSnapshot,
     build_pr_snapshot,
     exact_ci_command,
+    notification_summary,
     notification_text,
     poll_tracker,
 )
@@ -407,7 +408,7 @@ def format_message(snapshot: PrSnapshot, failures, merge_success: bool = False) 
         )
 
     problems = "；".join(
-        f"{failure.context}：{notification_text(failure.summary)}"
+        f"{failure.context}：{notification_summary(failure.context, failure.summary)}"
         for failure in failures
     )
     return (
