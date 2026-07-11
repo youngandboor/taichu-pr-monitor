@@ -161,7 +161,13 @@ class MonitorServiceTest(unittest.TestCase):
                 "TaiChu PR build：执行结果：失败\n"
                 "说明：本次测的是 PR 合进目标分支后的结果。\n"
                 "失败摘要：测试未通过，请查看 Jenkins 日志与测试报告\n"
-                "构建产物（若有）：https://example.invalid/artifact",
+                "构建产物（若有）：https://example.invalid/artifact\n"
+                "failed_task_count=1\n"
+                "failed_task_1.task_label=Node B\n"
+                "failed_task_1.stage=non_device\n"
+                "failed_task_1.reason_type=compile_error\n"
+                "failed_task_1.suite=rust-workspace\n"
+                "failed_task_1.exit_status=101",
             ),
         )
 
@@ -169,12 +175,14 @@ class MonitorServiceTest(unittest.TestCase):
 
         self.assertEqual(
             "[TaiChu PR 1329] 发现问题："
-            "taichu/codex-pr-review：Codex found 2 P0/P1 principle issue(s)；"
-            "taichu/pr-build：测试未通过，请查看 Jenkins 日志与测试报告；"
+            "taichu/codex-pr-review：发现 2 个 P0/P1 原则问题；"
+            "taichu/pr-build：Node B/non_device/rust-workspace 编译失败（exit 101）；"
             "【Taichu PRbot 自动发送，回复TD退订】；"
             "查看 https://taichu.fun/gitea/SystemAgentDev/TaiChu/pulls/1329",
             message,
         )
+        self.assertEqual(1, message.count("https://"))
+        self.assertTrue(message.endswith(snapshot.url))
 
     def test_dispatch_rechecks_original_and_final_recipient_opt_outs(self):
         class DispatchStore:

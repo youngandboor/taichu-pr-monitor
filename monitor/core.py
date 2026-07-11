@@ -6,7 +6,7 @@ import dataclasses
 import datetime as dt
 import html
 import re
-from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 
 DEFAULT_POLL_INTERVAL_SECONDS = 180
@@ -34,6 +34,8 @@ MERGE_GATE_CONTEXTS = (
     "taichu/dev-cloud-preflight",
     "ci/merge-gate",
 )
+
+TRUSTED_GATE_COMMENT_AUTHORS = frozenset({"taichu-ci-bot"})
 
 # Validated surname readings cover current TaiChu authors plus common surnames.
 # Unknown or ambiguous data fails closed and can be handled by a recipient override.
@@ -224,7 +226,7 @@ def build_pr_snapshot(
     failures = []
     for context in GATE_CONTEXTS:
         candidate = latest_by_context.get(context)
-        if candidate and is_actionable_failure(candidate.state, candidate.summary):
+        if candidate and candidate.state == "failure":
             failures.append(GateFailure(context, candidate.updated_at, candidate.summary))
 
     pr_build = latest_by_context.get("taichu/pr-build")
@@ -383,37 +385,300 @@ def notification_text(value: str) -> str:
 
 
 def notification_summary(context: str, value: str) -> str:
-    text = _notification_plain_text(value)
-    labeled = _labeled_failure_summary(text)
-    if labeled:
-        return notification_text(labeled)
-
-    if normalize_gate_context(context) == "taichu/codex-pr-review":
-        match = re.search(
-            r"Codex\s+found\s+\d+\s+P0/P1\s+principle\s+issue(?:\(s\)|s)?",
-            text,
-            flags=re.IGNORECASE,
+    gate = normalize_gate_context(context)
+    raw_value = _value(value)
+    structured = _notification_structured_text(value)
+    extractors = {
+        "protected-file-approval": _approval_notification_summary,
+        "taichu/codex-pr-review": _codex_notification_summary,
+        "taichu/pr-build": _build_notification_summary,
+        "taichu/dev-cloud-preflight": _preflight_notification_summary,
+    }
+    if gate == "ci/merge-gate":
+        candidate = _merge_notification_summary(
+            structured,
+            auto_merge_blocked=(
+                "<!-- taichu-ci/auto-merge-blocked" in raw_value.lower()
+            ),
         )
-        if match:
-            return match.group(0).strip()
+    else:
+        extractor = extractors.get(gate)
+        candidate = extractor(structured) if extractor is not None else ""
 
+    if not candidate and gate != "taichu/dev-cloud-preflight":
+        labeled = _labeled_failure_summary(structured)
+        if labeled and not _is_generic_failure_summary(labeled):
+            candidate = labeled
+
+    if not candidate:
+        plain = _strip_leading_timestamp(_notification_plain_text(structured))
+        if _looks_like_gate_template(gate, structured):
+            candidate = _default_gate_failure_summary(gate)
+        else:
+            candidate = plain
+
+    return _finalize_notification_summary(candidate, gate)
+
+
+def _notification_structured_text(value: str) -> str:
+    text = _value(value)
     text = re.sub(
-        r"^\s*\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}"
-        r"(?:[.,]\d+)?(?:\s*(?:Z|[+-]\d{2}:?\d{2}))?\s*(?:\|+|[-–—])\s*",
-        "",
+        r"(?i)<\s*(?:br|/p|/div|/li|/tr|/h[1-6])\b[^>]*>",
+        "\n",
         text,
     )
-    return notification_text(text)
+    text = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
+    text = re.sub(r"<[/!?]?[A-Za-z][^>\r\n]*>", "", text)
+    text = html.unescape(text)
+    text = re.sub(r"!\[([^\]]*)\]\([^)]+\)", r"\1", text)
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+    text = text.replace("**", "").replace("__", "").replace("`", "")
+    return text.strip()
 
 
 def _notification_plain_text(value: str) -> str:
-    text = _value(value)
-    text = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
-    text = re.sub(r"<[^>]*>", "", text, flags=re.DOTALL)
-    text = html.unescape(text)
+    text = _notification_structured_text(value)
     text = re.sub(r"^\s*#+\s*", "", text, flags=re.MULTILINE)
-    text = text.replace("**", "").replace("__", "").replace("`", "")
     return text.strip()
+
+
+def _approval_notification_summary(value: str) -> str:
+    return _section_first_bullet(value, ("结果",))
+
+
+def _codex_notification_summary(value: str) -> str:
+    match = re.search(
+        r"Codex\s+found\s+(\d{1,3})\s+P0/P1\s+principle\s+issue(?:\(s\)|s)?",
+        value,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        return f"发现 {match.group(1)} 个 P0/P1 原则问题"
+    bullets = _section_bullets(value, ("原则问题",))
+    blocking = [bullet for bullet in bullets if re.match(r"^P[01]\b", bullet)]
+    if blocking:
+        return f"发现 {len(blocking)} 个 P0/P1 原则问题"
+    return _first_sentence(bullets[0]) if bullets else ""
+
+
+def _build_notification_summary(value: str) -> str:
+    tasks = _structured_failed_task_summary(value)
+    if tasks:
+        return tasks
+    labeled = _labeled_failure_summary(value)
+    return "" if _is_generic_failure_summary(labeled) else labeled
+
+
+def _preflight_notification_summary(value: str) -> str:
+    failures = _markdown_failure_rows(value)
+    if failures:
+        specific = [
+            item
+            for item in failures
+            if not any(
+                marker in item[0].lower()
+                for marker in ("总体", "总览", "overall", "健康检查")
+            )
+        ]
+        name, reason = (specific or failures)[0]
+        return f"{name}：{reason}" if reason else f"{name}未通过"
+    return _labeled_value(value, ("结论",))
+
+
+def _merge_notification_summary(value: str, *, auto_merge_blocked: bool = False) -> str:
+    tasks = _structured_failed_task_summary(value)
+    if tasks:
+        return tasks
+
+    match = re.search(
+        r"执行结果[ \t]*[：:][ \t]*失败[ \t]*[，,:：][ \t]*([^\n]+)",
+        value,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        return match.group(1).strip()
+
+    blocked_labels = ["未放行原因", "阻塞原因", "当前阻塞"]
+    if auto_merge_blocked:
+        blocked_labels.append("原因")
+    blocked = _labeled_value(value, blocked_labels)
+    if blocked:
+        return _first_sentence(blocked)
+
+    skipped = re.search(
+        r"CI[ \t]*未执行测试[ \t]*[：:][ \t]*([^\n]+)",
+        value,
+        flags=re.IGNORECASE,
+    )
+    if skipped:
+        return skipped.group(1).strip()
+
+    labeled = _labeled_failure_summary(value)
+    return "" if _is_generic_failure_summary(labeled) else labeled
+
+
+def _structured_failed_task_summary(value: str) -> str:
+    fields: Dict[int, Dict[str, str]] = {}
+    for match in re.finditer(
+        r"(?m)^\s*failed_task_(\d{1,2})\.([a-zA-Z0-9_]+)\s*=\s*([^\r\n]*)$",
+        value,
+    ):
+        task = fields.setdefault(int(match.group(1)), {})
+        task[match.group(2).lower()] = match.group(3).strip()
+    if not fields:
+        return ""
+
+    count_match = re.search(r"(?m)^\s*failed_task_count\s*=\s*(\d{1,2})\s*$", value)
+    declared_count = int(count_match.group(1)) if count_match else len(fields)
+    summaries = [_failed_task_text(fields[index]) for index in sorted(fields)]
+    summaries = [summary for summary in summaries if summary]
+    if not summaries:
+        return ""
+    if declared_count > 1 or len(summaries) > 1:
+        return f"{max(declared_count, len(summaries))} 项失败：" + "；".join(summaries[:2])
+    return summaries[0]
+
+
+def _failed_task_text(fields: Mapping[str, str]) -> str:
+    path = []
+    for key in ("task_label", "stage", "suite"):
+        value = _safe_task_field(fields.get(key, ""))
+        if value and value.casefold() not in {item.casefold() for item in path}:
+            path.append(value)
+    reason_type = fields.get("reason_type", "").strip().lower()
+    reason = {
+        "compile_error": "编译失败",
+        "failed_suite": "测试任务失败",
+        "ci_job_failure": "CI 任务失败",
+        "smoke_failure": "冒烟失败",
+        "test_failure": "测试失败",
+        "timeout": "超时",
+    }.get(reason_type, "失败")
+    raw_exit_status = fields.get("exit_status", "").strip()
+    exit_status = raw_exit_status if re.fullmatch(r"-?\d{1,6}", raw_exit_status) else ""
+    prefix = "/".join(path)
+    text = f"{prefix} {reason}".strip()
+    return f"{text}（exit {exit_status}）" if exit_status else text
+
+
+def _safe_task_field(value: str) -> str:
+    text = _value(value).strip()
+    if not text or len(text) > 64:
+        return ""
+    if re.search(
+        r"(?i)(?:https?://|secret|token|password|credential|api[_-]?key|"
+        r"session[_-]?id|user[_-]?id|uuid|@|=)",
+        text,
+    ):
+        return ""
+    return text if re.fullmatch(r"[A-Za-z0-9_+ .\-/\u4e00-\u9fff]+", text) else ""
+
+
+def _markdown_failure_rows(value: str) -> List[Tuple[str, str]]:
+    lines = _value(value).splitlines()
+    failures = []
+    for index, line in enumerate(lines):
+        header = _markdown_cells(line)
+        if not header:
+            continue
+        normalized = [re.sub(r"\s+", "", cell).lower() for cell in header]
+        result_index = next(
+            (
+                item_index
+                for item_index, name in enumerate(normalized)
+                if name in {"结果", "状态", "result", "status"}
+            ),
+            -1,
+        )
+        if result_index < 0:
+            continue
+        reason_index = next(
+            (
+                item_index
+                for item_index, name in enumerate(normalized)
+                if "失败原因" in name or name in {"说明", "reason", "details", "detail"}
+            ),
+            -1,
+        )
+        name_index = next(
+            (
+                item_index
+                for item_index, name in enumerate(normalized)
+                if name in {"用例", "检查项", "项目", "case", "item"}
+            ),
+            0,
+        )
+        for row_line in lines[index + 1 :]:
+            if not row_line.strip():
+                if failures:
+                    break
+                continue
+            row = _markdown_cells(row_line)
+            if not row:
+                break
+            if _markdown_separator_row(row) or result_index >= len(row):
+                continue
+            result = re.sub(r"\s+", "", row[result_index]).lower()
+            if not re.fullmatch(r"(?:fail(?:ed|ure)?|error|失败|未通过|不通过)", result):
+                continue
+            name = row[name_index].strip() if name_index < len(row) else ""
+            reason = row[reason_index].strip() if 0 <= reason_index < len(row) else ""
+            failures.append((name or "云侧用例", reason))
+        if failures:
+            break
+    return failures
+
+
+def _markdown_cells(line: str) -> List[str]:
+    stripped = line.strip()
+    if not stripped.startswith("|") or not stripped.endswith("|"):
+        return []
+    return [cell.strip() for cell in stripped.strip("|").split("|")]
+
+
+def _markdown_separator_row(cells: Sequence[str]) -> bool:
+    return bool(cells) and all(re.fullmatch(r":?-{3,}:?", cell.strip()) for cell in cells)
+
+
+def _section_first_bullet(value: str, headings: Sequence[str]) -> str:
+    bullets = _section_bullets(value, headings)
+    return bullets[0] if bullets else ""
+
+
+def _section_bullets(value: str, headings: Sequence[str]) -> List[str]:
+    lines = _value(value).splitlines()
+    wanted = {heading.casefold() for heading in headings}
+    inside = False
+    bullets = []
+    for line in lines:
+        heading = re.match(r"^\s*#{1,6}\s*(.*?)\s*$", line)
+        if heading:
+            title = heading.group(1).strip().casefold()
+            if inside:
+                break
+            inside = title in wanted
+            continue
+        if not inside:
+            continue
+        bullet = re.match(r"^\s*[-*]\s+(.+?)\s*$", line)
+        if bullet:
+            bullets.append(bullet.group(1).strip())
+    return bullets
+
+
+def _first_sentence(value: str) -> str:
+    text = _value(value).strip()
+    match = re.match(r"(.+?[。！？!?])", text)
+    return match.group(1).strip() if match else text
+
+
+def _labeled_value(value: str, labels: Sequence[str]) -> str:
+    label_pattern = "|".join(re.escape(label) for label in labels)
+    match = re.search(
+        rf"(?im)^\s*(?:[-*]\s*)?(?:{label_pattern})[ \t]*[：:][ \t]*([^\r\n]+)",
+        value,
+    )
+    return match.group(1).strip() if match else ""
 
 
 def _labeled_failure_summary(value: str) -> str:
@@ -423,24 +688,19 @@ def _labeled_failure_summary(value: str) -> str:
         r"failure\s+summary|failure\s+reason|error\s+summary)\s*[：:]\s*(.*)$",
         flags=re.IGNORECASE,
     )
-    for index, line in enumerate(lines):
+    for line in lines:
         match = label.match(line)
         if not match:
             continue
         summary = match.group(1).strip()
-        if not summary:
-            for following in lines[index + 1 :]:
-                summary = following.strip(" -*\t")
-                if summary:
-                    break
         if summary:
             return summary.rstrip("；;")
 
     inline = re.search(
         r"(?:失败摘要|失败原因|错误摘要|failure\s+summary|failure\s+reason|"
-        r"error\s+summary)\s*[：:]\s*(.+)",
+        r"error\s+summary)[ \t]*[：:][ \t]*([^\r\n]+)",
         _value(value),
-        flags=re.IGNORECASE | re.DOTALL,
+        flags=re.IGNORECASE,
     )
     if not inline:
         return ""
@@ -453,6 +713,93 @@ def _labeled_failure_summary(value: str) -> str:
         flags=re.IGNORECASE,
     )[0]
     return summary.rstrip("；;").strip()
+
+
+def _is_generic_failure_summary(value: str) -> bool:
+    normalized = re.sub(r"[\s，。；;,.]+", "", _value(value)).lower()
+    return normalized in {
+        "测试未通过请查看jenkins日志与测试报告",
+        "测试未通过请查看日志与测试报告",
+        "构建失败请查看jenkins日志与测试报告",
+    }
+
+
+def _strip_leading_timestamp(value: str) -> str:
+    return re.sub(
+        r"^\s*\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}"
+        r"(?:[.,]\d+)?(?:\s*(?:Z|[+-]\d{2}:?\d{2}))?\s*(?:\|+|[-–—])\s*",
+        "",
+        _value(value),
+    ).strip()
+
+
+def _looks_like_gate_template(context: str, value: str) -> bool:
+    lower = _value(value).lower()
+    markers = {
+        "protected-file-approval": (
+            "protected-file-approval",
+            "pr approve检查",
+            "taichu-protected-file-approval",
+        ),
+        "taichu/codex-pr-review": (
+            "taichu/codex-pr-review",
+            "codex pr review",
+            "taichu-codex-pr-review",
+        ),
+        "taichu/pr-build": (
+            "taichu/pr-build",
+            "taichu pr build",
+            "external-ci/jenkins-pr-build",
+        ),
+        "taichu/dev-cloud-preflight": (
+            "taichu/dev-cloud-preflight",
+            "云侧 preflight",
+            "taichu-dev-cloud-preflight",
+        ),
+        "ci/merge-gate": (
+            "ci/merge-gate",
+            "taichu merge gate",
+            "external-ci/jenkins-merge-gate-test",
+        ),
+    }
+    return any(marker in lower for marker in markers.get(context, ()))
+
+
+def _default_gate_failure_summary(context: str) -> str:
+    return {
+        "protected-file-approval": "受保护文件审批未通过，详情见 PR",
+        "taichu/codex-pr-review": "Codex Review 未通过，详情见 PR",
+        "taichu/pr-build": "PR Build 失败，详情见 PR",
+        "taichu/dev-cloud-preflight": "云侧 Preflight 未通过，详情见 PR",
+        "ci/merge-gate": "Merge Gate 未通过，详情见 PR",
+    }.get(context, "门禁未通过，详情见 PR")
+
+
+def _finalize_notification_summary(value: str, context: str) -> str:
+    text = _notification_plain_text(value)
+    text = re.sub(r"https?://[^\s<>()]+", "", text, flags=re.IGNORECASE)
+    text = re.sub(
+        r"(?i)\b(secret|token|password|credential|api[_-]?key)\s*[:=]\s*\S+",
+        r"\1=***",
+        text,
+    )
+    text = re.sub(
+        r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
+        "[id]",
+        text,
+    )
+    text = re.sub(r"[，,；;]\s*详见.*$", "", text)
+    text = re.sub(
+        r"(?:Jenkins|详情链接|构建产物|产物链接)\s*[：:]\s*$",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"[，,；;]?\s*(?:详情|日志|链接)\s*$", "", text)
+    text = re.sub(r"\s+", " ", text).strip(" ；;|")
+    if not text:
+        text = _default_gate_failure_summary(context)
+    return notification_text(text)
 
 
 def exact_ci_command(value: Any) -> str:
@@ -582,48 +929,97 @@ def _happened_at_or_after_scan(event_at: str, last_scanned_at: str) -> bool:
 
 def _gate_from_comment(comment: Mapping[str, Any], current_head_sha: str) -> Optional[_GateCandidate]:
     body = _value(comment.get("body"))
-    lower = body.lower()
-    if exact_ci_command(body) or _is_queue_status_comment(body) or _is_build_timing_comment(body):
+    auto_merge_blocked = "<!-- taichu-ci/auto-merge-blocked" in body.lower()
+    if (
+        not _trusted_gate_comment(comment)
+        or exact_ci_command(body)
+        or (_is_queue_status_comment(body) and not auto_merge_blocked)
+        or _is_build_timing_comment(body)
+    ):
         return None
 
-    context = ""
-    if "protected-file-approval" in lower or "protected file" in lower:
-        context = "protected-file-approval"
-    elif "taichu/codex-pr-review" in lower or "codex-pr-review" in lower:
-        context = "taichu/codex-pr-review"
-    elif "taichu/pr-build" in lower or "pr-build" in lower:
-        context = "taichu/pr-build"
-    elif "taichu-dev-cloud-preflight" in lower or "taichu/dev-cloud-preflight" in lower:
-        context = "taichu/dev-cloud-preflight"
-    elif (
-        "external-ci/jenkins-merge-gate-test" in lower
-        or "taichu merge gate：执行结果" in lower
-        or "taichu merge gate: 执行结果" in lower
-        or "taichu-ci/auto-merge-blocked" in lower
-        or "ci/merge-gate" in lower
-        or "merge-gate" in lower
-    ) and not any(
-        marker in lower
-        for marker in ("merge-gate-onboard", "merge-gate-queue-status", "merge-gate-build-timing")
-    ):
-        context = "ci/merge-gate"
+    context = _comment_gate_context(body)
     if not context or _references_different_head(body, current_head_sha):
         return None
 
-    summary = _clean_comment_text(body)
+    state = (
+        "failure"
+        if auto_merge_blocked
+        else _state_from_comment(body, context=context)
+    )
+    summary = (
+        notification_summary(context, body)
+        if state == "failure"
+        else _clean_comment_text(body)
+    )
     return _GateCandidate(
         context=context,
-        state=_state_from_comment(body),
+        state=state,
         summary=summary,
         updated_at=_timestamp(comment),
         item_id=_integer(comment.get("id")),
     )
 
 
-def _state_from_comment(value: str) -> str:
+def _trusted_gate_comment(comment: Mapping[str, Any]) -> bool:
+    user = comment.get("user")
+    login = _value(user.get("login") if isinstance(user, Mapping) else "").strip()
+    return login.casefold() in TRUSTED_GATE_COMMENT_AUTHORS
+
+
+def _comment_gate_context(body: str) -> str:
+    lower = _value(body).lower()
+    marker_contexts = (
+        ("<!-- taichu-protected-file-approval", "protected-file-approval"),
+        ("<!-- taichu-codex-pr-review", "taichu/codex-pr-review"),
+        ("<!-- external-ci/jenkins-pr-build", "taichu/pr-build"),
+        ("<!-- taichu-dev-cloud-preflight", "taichu/dev-cloud-preflight"),
+        ("<!-- external-ci/jenkins-merge-gate-test", "ci/merge-gate"),
+        ("<!-- taichu-ci/auto-merge-blocked", "ci/merge-gate"),
+    )
+    for marker, context in marker_contexts:
+        if marker in lower:
+            return context
+
+    explicit_patterns = (
+        (
+            r"^\s*(?:#{1,6}\s*)?(?:taichu/)?protected-file-approval\b|"
+            r"^\s*#{1,6}\s*pr approve检查\s*$",
+            "protected-file-approval",
+        ),
+        (
+            r"^\s*(?:#{1,6}\s*)?taichu/codex-pr-review\b|"
+            r"^\s*#{1,6}\s*codex pr review\s*$",
+            "taichu/codex-pr-review",
+        ),
+        (
+            r"^\s*(?:#{1,6}\s*)?taichu/pr-build\b|"
+            r"^\s*#{1,6}\s*taichu pr build\s*[：:].*执行结果",
+            "taichu/pr-build",
+        ),
+        (
+            r"^\s*(?:#{1,6}\s*)?taichu(?:-|/)dev-cloud-preflight\b|"
+            r"^\s*#{1,6}\s*taichu 云侧 preflight\s*[：:]",
+            "taichu/dev-cloud-preflight",
+        ),
+        (
+            r"^\s*(?:#{1,6}\s*)?ci/merge-gate\b|"
+            r"^\s*#{1,6}\s*taichu merge gate\s*[：:].*执行结果",
+            "ci/merge-gate",
+        ),
+    )
+    for pattern, context in explicit_patterns:
+        if re.search(pattern, body, flags=re.IGNORECASE | re.MULTILINE):
+            return context
+    return ""
+
+
+def _state_from_comment(value: str, *, context: str = "") -> str:
     lower = _value(value).lower()
     if _is_build_timing_comment(value):
         return "unknown"
+    if context == "taichu/codex-pr-review":
+        return _codex_comment_state(value)
     if any(
         marker in lower
         for marker in (
@@ -649,11 +1045,51 @@ def _state_from_comment(value: str) -> str:
         )
     ):
         return "failure"
+    if context == "taichu/dev-cloud-preflight":
+        structured = _notification_structured_text(value)
+        if re.search(
+            r"preflight\s*[：:]\s*失败\b",
+            structured,
+            flags=re.IGNORECASE,
+        ) or _markdown_failure_rows(structured):
+            return "failure"
     if not _is_inactive_queue_comment(value) and any(
         marker in lower for marker in ("queued", "running", "排队", "运行中")
     ):
         return "pending"
     if "通过" in lower or "success" in lower:
+        return "success"
+    return "unknown"
+
+
+def _codex_comment_state(value: str) -> str:
+    structured = _notification_structured_text(value)
+    lower = structured.lower()
+    status = re.search(
+        r"taichu/codex-pr-review\s*=\s*(?:failure|failed|success|successful)",
+        lower,
+    )
+    if status:
+        return "failure" if "fail" in status.group(0) else "success"
+    if "本次不调用 codex，直接失败" in lower:
+        return "failure"
+
+    count = re.search(
+        r"codex\s+found\s+(\d{1,3})\s+p0/p1\s+principle\s+issue(?:\(s\)|s)?",
+        lower,
+    )
+    if count:
+        return "failure" if int(count.group(1)) > 0 else "success"
+
+    bullets = _section_bullets(structured, ("原则问题",))
+    if any(re.match(r"^P[01]\b", bullet, flags=re.IGNORECASE) for bullet in bullets):
+        return "failure"
+    if any("未发现原则问题" in bullet for bullet in bullets):
+        return "success"
+    if any(
+        marker in lower
+        for marker in ("found no p0/p1", "no p0/p1 principle issues")
+    ):
         return "success"
     return "unknown"
 

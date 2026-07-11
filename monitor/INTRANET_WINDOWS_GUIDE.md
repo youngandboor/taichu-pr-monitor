@@ -118,6 +118,22 @@ Command discovery passed.
 
 这一步失败时不要启动正式监控。先按内部文档修复 WeLink CLI 登录、账号或网络问题。
 
+### 可选：测试 WeLink 支持的消息格式
+
+独立格式测试脚本默认只预览，不会发送：
+
+```powershell
+.\monitor\windows\test_welink_messages.ps1 -TestCase url-last
+```
+
+确认预览内容后，向一位知情同意且不是当前 WeLink 登录账号的收件人发送：
+
+```powershell
+.\monitor\windows\test_welink_messages.ps1 -TestCase url-last -Receiver "对方W3账号" -Send
+```
+
+支持 `single-line`、`url-last`、`url-followed-by-text`、`long-single-line`、`multi-line` 和 `all`。`url-last` 与 `url-followed-by-text` 使用同类正文，可直接对比 URL 后有无文字对链接识别的影响；`all` 会连续发送五条测试消息。每条都会显示字符数、UTF-8 字节数、行数、URL 是否位于最后、CLI 返回码和耗时。`multi-line` 只用于复现和对照，正式 PRbot 消息仍保持单行。
+
 ## 第 5 步：把 Gitea PAT 放进当前窗口
 
 在 Gitea 的“设置 -> 应用 -> 管理访问令牌”创建 PAT。令牌既要能够读取 `SystemAgentDev/TaiChu`，也要能够在 PR/Issue 下发表评论；如果页面提供权限范围，请同时选择仓库读取和 Issue/评论写入权限。
