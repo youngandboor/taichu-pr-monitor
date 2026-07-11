@@ -25,7 +25,10 @@ class InstanceLockTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             state_path = pathlib.Path(temp_dir) / "monitor.sqlite3"
             with InstanceLock(state_path) as lock:
-                self.assertTrue(lock.path.read_text(encoding="ascii").strip().isdigit())
+                lock_path = lock.path
+                self.assertTrue(lock_path.exists())
+
+            self.assertTrue(lock_path.read_text(encoding="ascii").strip().isdigit())
 
 
 if __name__ == "__main__":
