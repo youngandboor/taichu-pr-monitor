@@ -562,8 +562,7 @@ def _format_merge_success(
     duration_bucket = metrics.duration_days if metrics.duration_days <= 3 else 4
     title, body = MERGE_SUCCESS_COPY[duration_bucket][line_bucket]
     return (
-        f"[TaiChu PR {snapshot.number}] {title}"
-        f"（变更 {metrics.changed_lines:,} 行 · 历时 {metrics.duration_days} 天） "
+        f"[TaiChu PR {snapshot.number}] {title} "
         f"{body} "
         f"{footer} 查看 {snapshot.url}"
     )

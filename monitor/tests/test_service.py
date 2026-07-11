@@ -209,11 +209,12 @@ class MonitorServiceTest(unittest.TestCase):
                         merge_metrics=MergeMetrics(changed_lines, duration_days),
                     )
 
-                    self.assertIn(
-                        f"{title}（变更 {changed_lines:,} 行 · 历时 {duration_days} 天）",
-                        message,
+                    self.assertTrue(
+                        message.startswith(f"[TaiChu PR {snapshot.number}] {title} ")
                     )
                     self.assertIn(anchor, message)
+                    self.assertNotIn("（变更 ", message)
+                    self.assertNotIn(" 行 · 历时 ", message)
                     self.assertIn("【Taichu PRbot 自动发送，回复TD退订】", message)
                     self.assertEqual(1, message.count("https://"))
                     self.assertTrue(message.endswith(snapshot.url))
@@ -902,7 +903,7 @@ class MonitorServiceTest(unittest.TestCase):
                 sender.calls[0][1],
             )
             self.assertEqual(
-                "[TaiChu PR 7] Merge Successful 🔪（变更 120 行 · 历时 1 天） "
+                "[TaiChu PR 7] Merge Successful 🔪 "
                 "小几百行代码一天搞定，改得非常准。不需要冗长废话就能把痛点切掉，"
                 "老医生的刀法。代码已上膛，干得漂亮！🍻 "
                 "【Taichu PRbot 自动发送，回复TD退订】 "
@@ -1161,7 +1162,9 @@ class MonitorServiceTest(unittest.TestCase):
                 self.assertEqual([7], client.pull_detail_attempts)
                 self.assertEqual(2, len(sender.calls))
                 self.assertEqual(sender.calls[0][1], sender.calls[1][1])
-                self.assertIn("变更 120 行 · 历时 1 天", sender.calls[1][1])
+                self.assertIn("Merge Successful 🔪", sender.calls[1][1])
+                self.assertIn("老医生的刀法", sender.calls[1][1])
+                self.assertNotIn("（变更 ", sender.calls[1][1])
                 self.assertEqual("sent", store.list_outbox()[0].status)
 
     def test_timeout_is_uncertain_and_is_not_automatically_retried(self):
