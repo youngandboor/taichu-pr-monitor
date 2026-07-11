@@ -19,6 +19,22 @@ GATE_CONTEXTS = (
     "ci/merge-gate",
 )
 
+BUILD_GATE_CONTEXTS = (
+    "protected-file-approval",
+    "taichu/codex-pr-review",
+    "taichu/pr-build",
+)
+
+BUILD_PRECONDITION_CONTEXTS = (
+    "protected-file-approval",
+    "taichu/codex-pr-review",
+)
+
+MERGE_GATE_CONTEXTS = (
+    "taichu/dev-cloud-preflight",
+    "ci/merge-gate",
+)
+
 # Validated surname readings cover current TaiChu authors plus common surnames.
 # Unknown or ambiguous data fails closed and can be handled by a recipient override.
 _SURNAME_INITIALS = {
@@ -54,6 +70,14 @@ class GateFailure:
 
 
 @dataclasses.dataclass(frozen=True)
+class GateResult:
+    context: str
+    state: str
+    updated_at: str
+    summary: str
+
+
+@dataclasses.dataclass(frozen=True)
 class PrSnapshot:
     number: int
     title: str
@@ -69,6 +93,7 @@ class PrSnapshot:
     pr_build_state: str = ""
     pr_build_updated_at: str = ""
     pr_build_summary: str = ""
+    gate_results: Tuple[GateResult, ...] = ()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -87,7 +112,8 @@ class TrackerState:
 class TrackerResult:
     state: TrackerState
     notifications: Tuple[GateFailure, ...]
-    build_success: bool = False
+    request_merge_comment: bool = False
+    merge_success: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -202,6 +228,16 @@ def build_pr_snapshot(
             failures.append(GateFailure(context, candidate.updated_at, candidate.summary))
 
     pr_build = latest_by_context.get("taichu/pr-build")
+    gate_results = tuple(
+        GateResult(
+            candidate.context,
+            candidate.state,
+            candidate.updated_at,
+            candidate.summary,
+        )
+        for context in GATE_CONTEXTS
+        if (candidate := latest_by_context.get(context)) is not None
+    )
 
     url = _value(pr.get("html_url")).strip()
     if not url:
@@ -221,6 +257,7 @@ def build_pr_snapshot(
         pr_build_state=pr_build.state if pr_build else "",
         pr_build_updated_at=pr_build.updated_at if pr_build else "",
         pr_build_summary=pr_build.summary if pr_build else "",
+        gate_results=gate_results,
     )
 
 
@@ -262,28 +299,33 @@ def poll_tracker(state: TrackerState, snapshot: PrSnapshot) -> TrackerResult:
         if snapshot.latest_ci_command_key == state.observed_command_key
         else set()
     )
-    notifications = []
-    for failure in _failures_after_command(snapshot):
-        key = failure_key(snapshot, failure)
-        if state.last_scanned_at and not _happened_after_scan(failure.updated_at, state.last_scanned_at):
-            notified.add(key)
-            continue
-        if key in notified:
-            continue
-        notified.add(key)
-        notifications.append(failure)
+    new_command_round = snapshot.latest_ci_command_key != state.observed_command_key
+    failures = tuple(_stage_failures_after_command(snapshot))
+    notifications: Tuple[GateFailure, ...] = ()
+    failure_round_key = round_failure_key(snapshot)
+    if failures and failure_round_key not in notified:
+        command_started_after_scan = new_command_round
+        if command_started_after_scan or any(
+            _happened_at_or_after_scan(failure.updated_at, state.last_scanned_at)
+            for failure in failures
+        ):
+            notifications = failures
+        notified.add(failure_round_key)
 
-    success_key = build_success_key(snapshot)
-    build_success = False
-    if success_key:
-        if state.last_scanned_at and not _happened_after_scan(
-            snapshot.pr_build_updated_at,
+    request_merge_comment = False
+    merge_success = False
+    completion_key = stage_success_key(snapshot)
+    if completion_key and completion_key not in notified:
+        completed_at = _stage_completed_at(snapshot)
+        if new_command_round or _happened_at_or_after_scan(
+            completed_at,
             state.last_scanned_at,
         ):
-            notified.add(success_key)
-        elif success_key not in notified:
-            notified.add(success_key)
-            build_success = True
+            if snapshot.latest_ci_command == "/ci build":
+                request_merge_comment = True
+            elif snapshot.latest_ci_command == "/ci merge":
+                merge_success = True
+        notified.add(completion_key)
 
     next_state = TrackerState(
         snapshot.latest_ci_command_key,
@@ -291,7 +333,12 @@ def poll_tracker(state: TrackerState, snapshot: PrSnapshot) -> TrackerResult:
         True,
         _scan_watermark(state, snapshot),
     )
-    return TrackerResult(next_state, tuple(notifications), build_success)
+    return TrackerResult(
+        next_state,
+        notifications,
+        request_merge_comment=request_merge_comment,
+        merge_success=merge_success,
+    )
 
 
 def failure_key(snapshot: PrSnapshot, failure: GateFailure) -> str:
@@ -305,24 +352,26 @@ def failure_key(snapshot: PrSnapshot, failure: GateFailure) -> str:
     )
 
 
-def build_success_key(snapshot: PrSnapshot) -> str:
-    if (
-        snapshot.latest_ci_command != "/ci build"
-        or snapshot.pr_build_state != "success"
-        or not snapshot.latest_ci_command_key
-        or not snapshot.latest_ci_command_at
-        or not snapshot.pr_build_updated_at
-        or _time_key(snapshot.pr_build_updated_at) < _time_key(snapshot.latest_ci_command_at)
-    ):
+def round_failure_key(snapshot: PrSnapshot) -> str:
+    stage = _command_stage(snapshot.latest_ci_command)
+    if not stage or not snapshot.latest_ci_command_key:
         return ""
-    return ":".join(
-        (
-            snapshot.latest_ci_command_key,
-            "taichu/pr-build",
-            "success",
-            snapshot.head_sha,
-        )
-    )
+    return f"{snapshot.latest_ci_command_key}:{stage}:failure-notified"
+
+
+def stage_success_key(snapshot: PrSnapshot) -> str:
+    stage = _command_stage(snapshot.latest_ci_command)
+    if not stage or not _stage_succeeded_after_command(snapshot):
+        return ""
+    action = "merge-comment-attempted" if stage == "build" else "success-notified"
+    return f"{snapshot.latest_ci_command_key}:{stage}:{action}"
+
+
+def build_success_key(snapshot: PrSnapshot) -> str:
+    """Compatibility alias for the persisted build-completion round flag."""
+    if snapshot.latest_ci_command != "/ci build":
+        return ""
+    return stage_success_key(snapshot)
 
 
 def notification_text(value: str) -> str:
@@ -349,9 +398,9 @@ def _initialize_baseline(state: TrackerState, snapshot: PrSnapshot) -> TrackerSt
         if snapshot.latest_ci_command_key == state.observed_command_key
         else set()
     )
-    for failure in _failures_after_command(snapshot):
-        notified.add(failure_key(snapshot, failure))
-    success_key = build_success_key(snapshot)
+    if any(_stage_failures_after_command(snapshot)):
+        notified.add(round_failure_key(snapshot))
+    success_key = stage_success_key(snapshot)
     if success_key:
         notified.add(success_key)
     return TrackerState(
@@ -362,14 +411,82 @@ def _initialize_baseline(state: TrackerState, snapshot: PrSnapshot) -> TrackerSt
     )
 
 
-def _failures_after_command(snapshot: PrSnapshot) -> Iterable[GateFailure]:
+def _stage_failures_after_command(snapshot: PrSnapshot) -> Iterable[GateFailure]:
+    contexts = _stage_contexts(snapshot.latest_ci_command)
     for failure in snapshot.failures:
         if (
-            not failure.updated_at
-            or not snapshot.latest_ci_command_at
-            or _time_key(failure.updated_at) >= _time_key(snapshot.latest_ci_command_at)
+            failure.context in contexts
+            and _gate_result_belongs_to_round(
+                snapshot.latest_ci_command,
+                failure.context,
+                failure.updated_at,
+                snapshot.latest_ci_command_at,
+            )
         ):
             yield failure
+
+
+def _stage_succeeded_after_command(snapshot: PrSnapshot) -> bool:
+    contexts = _stage_contexts(snapshot.latest_ci_command)
+    if (
+        not contexts
+        or not snapshot.latest_ci_command_key
+        or not snapshot.latest_ci_command_at
+    ):
+        return False
+    results = {result.context: result for result in snapshot.gate_results}
+    return all(
+        context in results
+        and results[context].state == "success"
+        and _gate_result_belongs_to_round(
+            snapshot.latest_ci_command,
+            context,
+            results[context].updated_at,
+            snapshot.latest_ci_command_at,
+        )
+        for context in contexts
+    )
+
+
+def _stage_completed_at(snapshot: PrSnapshot) -> str:
+    contexts = _stage_contexts(snapshot.latest_ci_command)
+    candidates = [
+        result.updated_at
+        for result in snapshot.gate_results
+        if result.context in contexts and result.updated_at
+    ]
+    return max(candidates, key=_time_key) if candidates else ""
+
+
+def _gate_result_belongs_to_round(
+    command: str,
+    context: str,
+    result_at: str,
+    command_at: str,
+) -> bool:
+    if command == "/ci build" and context in BUILD_PRECONDITION_CONTEXTS:
+        return True
+    return bool(
+        result_at
+        and command_at
+        and _time_key(result_at) >= _time_key(command_at)
+    )
+
+
+def _stage_contexts(command: str) -> Tuple[str, ...]:
+    if command == "/ci build":
+        return BUILD_GATE_CONTEXTS
+    if command == "/ci merge":
+        return MERGE_GATE_CONTEXTS
+    return ()
+
+
+def _command_stage(command: str) -> str:
+    if command == "/ci build":
+        return "build"
+    if command == "/ci merge":
+        return "merge"
+    return ""
 
 
 def _scan_watermark(state: TrackerState, snapshot: PrSnapshot) -> str:
@@ -381,16 +498,17 @@ def _scan_watermark(state: TrackerState, snapshot: PrSnapshot) -> str:
     for failure in snapshot.failures:
         if _time_key(failure.updated_at) > _time_key(watermark):
             watermark = failure.updated_at
-    if _time_key(snapshot.pr_build_updated_at) > _time_key(watermark):
-        watermark = snapshot.pr_build_updated_at
+    for result in snapshot.gate_results:
+        if _time_key(result.updated_at) > _time_key(watermark):
+            watermark = result.updated_at
     return watermark
 
 
-def _happened_after_scan(event_at: str, last_scanned_at: str) -> bool:
+def _happened_at_or_after_scan(event_at: str, last_scanned_at: str) -> bool:
     return (
         not event_at
         or not last_scanned_at
-        or _time_key(event_at) > _time_key(last_scanned_at)
+        or _time_key(event_at) >= _time_key(last_scanned_at)
     )
 
 

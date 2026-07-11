@@ -1,21 +1,24 @@
 # 全开放 PR WeLink 监控
 
-这个服务每 3 分钟读取 `SystemAgentDev/TaiChu` 的全部开放 PR，沿用 Android 端的五门禁判定和通知去重规则，将新失败摘要与 CI Build 成功消息发送给 PR 提交人。
+这个服务每 3 分钟读取 `SystemAgentDev/TaiChu` 的全部开放 PR，按 Build 和 Merge 两个阶段判断门禁，将必要结果通过 WeLink 发送给 PR 提交人。
 
 第一次在内网 Windows 部署时，请直接按照 [`INTRANET_WINDOWS_GUIDE.md`](INTRANET_WINDOWS_GUIDE.md) 的零基础步骤执行，不需要先读完本文。
 
 ## 当前行为
 
 - 只监控 `https://taichu.fun/gitea/SystemAgentDev/TaiChu/pulls` 下的开放 PR。
-- 只把五个关键门禁中的明确失败视为问题。
+- Build 阶段只检查 `protected-file-approval`、`taichu/codex-pr-review`、`taichu/pr-build`。
+- Merge 阶段只检查 `taichu/dev-cloud-preflight`、`ci/merge-gate`。
 - 忽略旧 head、队列状态、构建耗时评论和旧命令之前的失败。
 - 第一次看到某个 PR 时只建立基线，不发送已有历史失败或历史成功。
-- 同一轮命令的同一失败只发送一次；新的 `/ci build` 或 `/ci merge` 开启新一轮。
-- 同一 PR 在一次轮询发现多个新失败时，合并成一条 WeLink 消息。
-- 当前 head 的最新 `/ci build` 轮次成功后发送一次；重复扫描不重发，新的 `/ci build` 成功后可再次通知。
-- 成功消息提示用户打开 PR，确认后手工评论 `/ci merge`；不读取 WeLink 回复。
+- 每个 `/ci build` 轮次最多发送一条失败消息；多个失败项合并在同一行。
+- Build 三门禁全部成功后不发成功消息，而是在 PR 中自动评论一次 `/ci merge`；提交前会重新读取最新评论中的最新 CI 命令，若已经是 `/ci merge` 就跳过；读取或评论失败只记录 warning，不重试、不额外通知；`--dry-run` 不会发送 WeLink，也不会写入 Gitea 评论。
+- 每个 `/ci merge` 轮次最多发送一条失败消息；Merge 两门禁成功后发送一次祝贺消息。
+- 所有 WeLink 消息都是单行，PR URL 始终位于最后，避免 WeLink 错误识别链接边界。
 - SQLite 同时保存判定水位和发送 outbox，进程重启后不会重新群发。
-- 持续运行时提供本地运维工作台，集中查看失败 PR、扫描健康度和消息发送状态。
+- 持续运行时提供运维工作台，集中查看失败 PR、完整发送记录、发送错误、磁盘容量和免打扰名单。
+
+当前 CLI 无法读取 WeLink 回复。消息里的“回复 TD 退订”是人工流程提示：维护者收到 TD 后，需要在工作台按对方的 8 位工号加入免打扰名单。
 
 监控优先从 Gitea PR 的 `user.full_name` 自动得到 W3：末尾已含“字母 + 8 位工号”时直接使用，否则使用中文姓氏的拼音首字母加末尾 8 位工号。无法确定时失败关闭，不会猜测发送；JSON 映射只用于例外覆盖。生产运行建议加 `--strict-recipients`，禁止把 Gitea 昵称当作 W3。
 
@@ -64,7 +67,12 @@ python3 -m monitor --welink-cli welink-cli
 
 - 失败优先的开放 PR 列表、搜索和状态筛选；
 - 最近扫描耗时、错误和停滞提示；
-- WeLink outbox 状态与显式重试；
+- 待发送、需人工处理、已发送和已跳过消息的精确计数与完整详情；
+- WeLink outbox 显式重试；
+- 按 8 位工号或完整 W3 动态增删免打扰名单；
+- 暂停和恢复监控，暂停后工作台仍可使用；
+- 在工作区干净时安全快进到 `origin/main` 并自动重启；
+- SQLite 占用、可回收空间和磁盘剩余容量；
 - “立即扫描”，不会打断正在执行的一轮扫描。
 
 默认按轮询开始时间每 180 秒启动一轮，并以 6 个并发任务读取 PR，避免开放 PR 较多时扫描本身占满整个周期。可用 `--poll-interval`、`--fetch-workers` 覆盖；`--once` 只执行一轮。常用仪表盘参数：
@@ -83,7 +91,14 @@ python3 -m monitor --once --dry-run --gitea-timeout 120 --gitea-retries 3
 
 HTTP `401`、`403` 等明确响应不会重试，需要直接修复 PAT 或仓库权限。
 
-仪表盘默认只监听 `127.0.0.1`。如使用 `--dashboard-host 0.0.0.0` 暴露给局域网，页面没有登录认证，只能在可信内网和受控防火墙下使用。
+仪表盘默认只监听 `127.0.0.1`，管理操作也默认只接受本机请求。确实需要从另一台内网电脑动态维护免打扰名单时，必须同时显式启用远程访问：
+
+```bash
+export TAICHU_DASHBOARD_TOKEN="use-a-long-random-secret"
+python3 -m monitor --dashboard-host 0.0.0.0 --allow-remote-dashboard-actions
+```
+
+浏览器会要求登录，用户名固定为 `monitor`，密码是 `TAICHU_DASHBOARD_TOKEN`。HTTP Basic 只能作为可信内网中的访问控制，仍需受控防火墙，绝不能暴露到公共网络。
 
 ## 提交人 W3 解析与覆盖
 
@@ -158,10 +173,12 @@ python -m monitor --open-dashboard
 python3 -m monitor --list-outbox
 ```
 
-状态含义：`sent` 已送达调用成功，`failed` 等待下一轮重试，`dead` 已耗尽重试，`uncertain` 调用超时且不自动重发，`unmapped` 找不到收件人。
+状态含义：`sent` 已送达调用成功，`pending` 等待发送，`failed` 等待下一轮重试，`dead` 已耗尽重试，`uncertain` 调用超时且不自动重发，`unmapped` 找不到收件人，`suppressed` 因免打扰设置跳过。
 
 从 `ba9f5c3` 等旧版本升级时不要删除状态库。旧 outbox 记录可能没有收件人字段；新版本会从仍然开放的当前 PR 作者信息回填 W3 后继续发送。若对应 PR 已关闭，则需要用 `recipients.json` 为该 Gitea 登录名提供一次覆盖。
 
-工作台“待处理”包含尚未尝试、发送失败、重试耗尽、结果不确定和未映射记录；应以消息行上的精确状态和 `last_error` 为准。
+工作台“待发送”包含 `pending` 和会自动重试的 `failed`；“需人工处理”包含 `dead`、`uncertain` 和 `unmapped`。已发送与已跳过消息可独立筛选，并可打开查看完整正文与 `last_error`。
+
+每次扫描主要覆盖现有状态，不会按轮询次数累积历史。持续增长的是 outbox；工作台会显示数据库大小和磁盘余量，但当前不会自动删除历史消息。
 
 仓库不会提交 token、真实账号映射、SQLite 状态库、WeLink 登录信息或内部安装文档。

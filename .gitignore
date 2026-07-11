@@ -24,5 +24,7 @@ harmony/entry/build/
 # Local all-open-PR monitor state and recipient identities
 monitor/.state/
 monitor/*.sqlite3
+monitor/*.sqlite3.lock
 monitor/*.db
+monitor/*.db.lock
 monitor/recipients.json
