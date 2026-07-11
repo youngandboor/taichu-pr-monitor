@@ -375,16 +375,84 @@ def build_success_key(snapshot: PrSnapshot) -> str:
 
 
 def notification_text(value: str) -> str:
+    text = _notification_plain_text(value)
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return "评论无可展示内容"
+    return text if len(text) <= 160 else text[:159].strip() + "..."
+
+
+def notification_summary(context: str, value: str) -> str:
+    text = _notification_plain_text(value)
+    labeled = _labeled_failure_summary(text)
+    if labeled:
+        return notification_text(labeled)
+
+    if normalize_gate_context(context) == "taichu/codex-pr-review":
+        match = re.search(
+            r"Codex\s+found\s+\d+\s+P0/P1\s+principle\s+issue(?:\(s\)|s)?",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if match:
+            return match.group(0).strip()
+
+    text = re.sub(
+        r"^\s*\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}"
+        r"(?:[.,]\d+)?(?:\s*(?:Z|[+-]\d{2}:?\d{2}))?\s*(?:\|+|[-–—])\s*",
+        "",
+        text,
+    )
+    return notification_text(text)
+
+
+def _notification_plain_text(value: str) -> str:
     text = _value(value)
     text = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
     text = re.sub(r"<[^>]*>", "", text, flags=re.DOTALL)
     text = html.unescape(text)
     text = re.sub(r"^\s*#+\s*", "", text, flags=re.MULTILINE)
     text = text.replace("**", "").replace("__", "").replace("`", "")
-    text = re.sub(r"\s+", " ", text).strip()
-    if not text:
-        return "评论无可展示内容"
-    return text if len(text) <= 160 else text[:159].strip() + "..."
+    return text.strip()
+
+
+def _labeled_failure_summary(value: str) -> str:
+    lines = _value(value).splitlines()
+    label = re.compile(
+        r"^\s*(?:[-*]\s*)?(?:失败摘要|失败原因|错误摘要|"
+        r"failure\s+summary|failure\s+reason|error\s+summary)\s*[：:]\s*(.*)$",
+        flags=re.IGNORECASE,
+    )
+    for index, line in enumerate(lines):
+        match = label.match(line)
+        if not match:
+            continue
+        summary = match.group(1).strip()
+        if not summary:
+            for following in lines[index + 1 :]:
+                summary = following.strip(" -*\t")
+                if summary:
+                    break
+        if summary:
+            return summary.rstrip("；;")
+
+    inline = re.search(
+        r"(?:失败摘要|失败原因|错误摘要|failure\s+summary|failure\s+reason|"
+        r"error\s+summary)\s*[：:]\s*(.+)",
+        _value(value),
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if not inline:
+        return ""
+    summary = inline.group(1).strip()
+    summary = re.split(
+        r"\s+(?=(?:构建产物|产物链接|详情链接|当前\s*(?:PR\s*)?head|"
+        r"PR\s*head|head\s*sha)\s*(?:[：:(（]|$))",
+        summary,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    return summary.rstrip("；;").strip()
 
 
 def exact_ci_command(value: Any) -> str:

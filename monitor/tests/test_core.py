@@ -10,6 +10,7 @@ from monitor.core import (
     derive_w3_account,
     effective_state,
     notification_text,
+    notification_summary,
     poll_tracker,
 )
 
@@ -161,6 +162,39 @@ class GateLogicTest(unittest.TestCase):
         self.assertNotIn("**", cleaned)
         self.assertLessEqual(len(cleaned), 162)
         self.assertTrue(cleaned.endswith("..."))
+
+    def test_notification_summary_extracts_structured_gate_failures(self):
+        build_comment = (
+            "本轮更新：2026-07-11 11:23:03\n"
+            "TaiChu PR build：执行结果：失败\n"
+            "说明：本次测的是 PR 合进目标分支后的结果。\n"
+            "Taichu PR build 构建失败（时间：2026-07-11 11:23:03）\n"
+            "失败摘要：测试未通过，请查看 Jenkins 日志与测试报告\n"
+            "构建产物（若 Doc 测试失败）：https://example.invalid/artifact"
+        )
+
+        self.assertEqual(
+            "测试未通过，请查看 Jenkins 日志与测试报告",
+            notification_summary("taichu/pr-build", build_comment),
+        )
+        self.assertEqual(
+            "Codex found 2 P0/P1 principle issue(s)",
+            notification_summary(
+                "taichu/codex-pr-review",
+                "2026-07-11 11:20:46 | Codex found 2 P0/P1 principle issue(s)",
+            ),
+        )
+
+    def test_notification_summary_uses_inline_failure_summary(self):
+        text = (
+            "TaiChu PR build：执行结果：失败 失败摘要：compile error in module foo "
+            "构建产物（若有）：https://example.invalid/artifact"
+        )
+
+        self.assertEqual(
+            "compile error in module foo",
+            notification_summary("taichu/pr-build", text),
+        )
 
     def test_default_poll_interval_is_three_minutes(self):
         self.assertEqual(180, DEFAULT_POLL_INTERVAL_SECONDS)

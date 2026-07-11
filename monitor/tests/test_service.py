@@ -136,6 +136,46 @@ class MonitorServiceTest(unittest.TestCase):
         )
         self.assertNotIn("\n", message)
 
+    def test_gate_templates_are_reduced_to_actionable_failure_summaries(self):
+        snapshot = PrSnapshot(
+            number=1329,
+            title="ignored title",
+            author="w00123",
+            head_sha="abcdef123456",
+            url="https://taichu.fun/gitea/SystemAgentDev/TaiChu/pulls/1329",
+            latest_ci_command="/ci build",
+            latest_ci_command_at="2026-07-11T11:19:00+08:00",
+            latest_ci_command_key="build-1329",
+            scanned_at="2026-07-11T11:24:00+08:00",
+            failures=(),
+        )
+        failures = (
+            GateFailure(
+                "taichu/codex-pr-review",
+                "",
+                "2026-07-11 11:20:46 | Codex found 2 P0/P1 principle issue(s)",
+            ),
+            GateFailure(
+                "taichu/pr-build",
+                "",
+                "TaiChu PR build：执行结果：失败\n"
+                "说明：本次测的是 PR 合进目标分支后的结果。\n"
+                "失败摘要：测试未通过，请查看 Jenkins 日志与测试报告\n"
+                "构建产物（若有）：https://example.invalid/artifact",
+            ),
+        )
+
+        message = format_message(snapshot, failures)
+
+        self.assertEqual(
+            "[TaiChu PR 1329] 发现问题："
+            "taichu/codex-pr-review：Codex found 2 P0/P1 principle issue(s)；"
+            "taichu/pr-build：测试未通过，请查看 Jenkins 日志与测试报告；"
+            "【Taichu PRbot 自动发送，回复TD退订】；"
+            "查看 https://taichu.fun/gitea/SystemAgentDev/TaiChu/pulls/1329",
+            message,
+        )
+
     def test_dispatch_rechecks_original_and_final_recipient_opt_outs(self):
         class DispatchStore:
             def __init__(self, record, opted_out):
