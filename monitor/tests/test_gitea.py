@@ -88,6 +88,29 @@ class GiteaClientTest(unittest.TestCase):
         self.assertTrue(all("state=open" in path for path in client.paths))
         self.assertTrue(all("sort=recentupdate" in path for path in client.paths))
 
+    def test_get_pull_reads_detail_used_for_merge_metrics(self):
+        client = RecordingClient(
+            [
+                {
+                    "number": 7,
+                    "created_at": "2026-07-10T00:00:00Z",
+                    "additions": 100,
+                    "deletions": 20,
+                }
+            ]
+        )
+
+        pull = client.get_pull("SystemAgentDev", "TaiChu", 7)
+
+        self.assertEqual(100, pull["additions"])
+        self.assertTrue(client.paths[0].endswith("/repos/SystemAgentDev/TaiChu/pulls/7"))
+
+    def test_get_pull_rejects_an_invalid_detail_response(self):
+        client = RecordingClient([[{"number": 7}]])
+
+        with self.assertRaisesRegex(GiteaApiError, "invalid pull request response"):
+            client.get_pull("SystemAgentDev", "TaiChu", 7)
+
     def test_follows_link_header_when_server_caps_requested_page_size(self):
         link = (
             '<https://taichu.fun/gitea/api/v1/repos/x/y/pulls?page=2>; rel="next",'

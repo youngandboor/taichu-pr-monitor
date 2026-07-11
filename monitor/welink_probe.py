@@ -9,6 +9,8 @@ import re
 import time
 from typing import Dict, Optional, Sequence
 
+from .core import PrSnapshot
+from .service import MergeMetrics, format_message
 from .welink import WeLinkCli
 
 
@@ -29,16 +31,26 @@ def build_probe_messages(
 ) -> Dict[str, str]:
     stamp = timestamp or dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
     long_detail = "；".join(f"检查项{i:02d}=失败摘要样例" for i in range(1, 25))
+    merge_success = format_message(
+        PrSnapshot(
+            number=1111,
+            title="WeLink format probe",
+            author="w00000000",
+            head_sha="abcdef123456",
+            url=pr_url,
+            latest_ci_command="/ci merge",
+            latest_ci_command_at=stamp,
+            latest_ci_command_key="format-probe",
+            scanned_at=stamp,
+            failures=(),
+        ),
+        (),
+        merge_success=True,
+        merge_metrics=MergeMetrics(2733, 4),
+    )
     return {
         "single-line": f"[TaiChu PRbot 格式测试] 单行纯文本；时间 {stamp}",
-        "merge-success": (
-            "🎉🎊 [TaiChu PR 1111] Merge 成功啦！"
-            "这一关真的不容易，反复排障、耐心等待和一次次坚持都没有白费。"
-            "所有门禁终于全部通过，恭喜顺利合入！"
-            "辛苦了，为你鼓掌，这一刻值得好好庆祝！ 🥳✨🏆 "
-            "【Taichu PRbot 自动发送，回复TD退订】 查看 "
-            f"{pr_url}"
-        ),
+        "merge-success": merge_success,
         "url-last": (
             "[TaiChu PR 1111] 发现问题：taichu/pr-build：消息格式测试 "
             "【Taichu PRbot 自动发送，回复TD退订】 查看 "

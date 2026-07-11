@@ -3,7 +3,14 @@ import tempfile
 import unittest
 
 from monitor.core import GateFailure, PrSnapshot, TrackerState
-from monitor.service import MonitorService, PollReport, RecipientDirectory, format_message
+from monitor.service import (
+    MergeMetrics,
+    MonitorService,
+    PollReport,
+    RecipientDirectory,
+    _merge_metrics_from_pull,
+    format_message,
+)
 from monitor.state import MonitorStore, OutboxEvent, OutboxRecord
 from monitor.welink import DeliveryResult
 
@@ -13,6 +20,15 @@ class FakeGiteaClient:
         self.comment_attempts = []
         self.comment_error = None
         self.comment_responses = []
+        self.pull_detail_attempts = []
+        self.pull_detail_error = None
+        self.pull_detail = {
+            "number": 7,
+            "created_at": "2026-07-10T10:00:00+08:00",
+            "additions": 100,
+            "deletions": 20,
+            "changed_files": 2,
+        }
         self.user = {"login": "w00123"}
         self.statuses = [
             {
@@ -44,6 +60,12 @@ class FakeGiteaClient:
 
     def get_statuses(self, owner, repo, sha):
         return list(self.statuses)
+
+    def get_pull(self, owner, repo, number):
+        self.pull_detail_attempts.append(number)
+        if self.pull_detail_error is not None:
+            raise self.pull_detail_error
+        return dict(self.pull_detail)
 
     def get_issue_comments(self, owner, repo, number, max_pages):
         if self.comment_responses:
@@ -135,6 +157,184 @@ class MonitorServiceTest(unittest.TestCase):
             message,
         )
         self.assertNotIn("\n", message)
+
+    def test_merge_success_copy_covers_all_duration_and_line_buckets(self):
+        snapshot = PrSnapshot(
+            number=1111,
+            title="ignored title",
+            author="w00123",
+            head_sha="abcdef123456",
+            url="https://taichu.fun/gitea/SystemAgentDev/TaiChu/pulls/1111",
+            latest_ci_command="/ci merge",
+            latest_ci_command_at="2026-07-10T10:00:00+08:00",
+            latest_ci_command_key="merge-1",
+            scanned_at="2026-07-10T10:05:00+08:00",
+            failures=(),
+        )
+        line_samples = (499, 500, 1500, 2501)
+        expected = (
+            (
+                ("Merge Successful 🔪", "老医生的刀法"),
+                ("PR Merged 🚀", "机器跑得都没你脑子转得快"),
+                ("Merged ⚡", "Review 居然挑不出什么毛病"),
+                ("Merge Complete 🤯", "单兵突击能力太硬核"),
+            ),
+            (
+                ("Code Integrated 💎", "并发和边界"),
+                ("Merge Successful 🛠️", "团队很安心"),
+                ("PR Merged 🚢", "给后续省了不少事"),
+                ("Merged 🚀", "提振士气"),
+            ),
+            (
+                ("Finally Merged 💣", "深水雷"),
+                ("Merge Successful 🛡️", "最终方案非常优雅"),
+                ("PR Merged 🛠️", "心肺复苏"),
+                ("Merge Complete 🎉", "硬仗打赢了"),
+            ),
+            (
+                ("Finally Merged 🧗", "四两拨千斤"),
+                ("Merge Successful 🏆", "长线抗压"),
+                ("Approved & Merged 🚢", "大山搬平了"),
+                ("PR MERGED 👑", "真正的核心战力"),
+            ),
+        )
+
+        for duration_days, duration_cases in enumerate(expected, start=1):
+            for changed_lines, (title, anchor) in zip(line_samples, duration_cases):
+                with self.subTest(days=duration_days, lines=changed_lines):
+                    message = format_message(
+                        snapshot,
+                        (),
+                        merge_success=True,
+                        merge_metrics=MergeMetrics(changed_lines, duration_days),
+                    )
+
+                    self.assertIn(
+                        f"{title}（变更 {changed_lines:,} 行 · 历时 {duration_days} 天）",
+                        message,
+                    )
+                    self.assertIn(anchor, message)
+                    self.assertIn("【Taichu PRbot 自动发送，回复TD退订】", message)
+                    self.assertEqual(1, message.count("https://"))
+                    self.assertTrue(message.endswith(snapshot.url))
+                    self.assertFalse(
+                        any(
+                            mark in message
+                            for mark in ("\r", "\n", "\u2028", "\u2029")
+                        )
+                    )
+                    self.assertNotIn("**", message)
+
+    def test_merge_success_line_bucket_boundaries(self):
+        snapshot = PrSnapshot(
+            7,
+            "title",
+            "w00123",
+            "abcdef123456",
+            "https://taichu.fun/gitea/SystemAgentDev/TaiChu/pulls/7",
+            "/ci merge",
+            "2026-07-10T10:00:00+08:00",
+            "merge-1",
+            "2026-07-10T10:05:00+08:00",
+            (),
+        )
+        cases = (
+            (0, "Merge Successful 🔪"),
+            (499, "Merge Successful 🔪"),
+            (500, "PR Merged 🚀"),
+            (1499, "PR Merged 🚀"),
+            (1500, "Merged ⚡"),
+            (2500, "Merged ⚡"),
+            (2501, "Merge Complete 🤯"),
+        )
+
+        for changed_lines, expected_title in cases:
+            with self.subTest(lines=changed_lines):
+                message = format_message(
+                    snapshot,
+                    (),
+                    merge_success=True,
+                    merge_metrics=MergeMetrics(changed_lines, 1),
+                )
+                self.assertIn(expected_title, message)
+
+    def test_merge_metrics_use_diff_lines_and_notification_time_boundaries(self):
+        pull = {
+            "created_at": "2026-07-10T00:00:00Z",
+            "additions": 7,
+            "deletions": 3,
+        }
+        cases = (
+            ("2026-07-10T00:00:00Z", 1),
+            ("2026-07-11T00:00:00Z", 1),
+            ("2026-07-11T00:00:01Z", 2),
+            ("2026-07-12T00:00:00Z", 2),
+            ("2026-07-12T00:00:01Z", 3),
+            ("2026-07-13T00:00:00Z", 3),
+            ("2026-07-13T00:00:01Z", 4),
+        )
+
+        for completed_at, expected_days in cases:
+            with self.subTest(completed_at=completed_at):
+                self.assertEqual(
+                    MergeMetrics(10, expected_days),
+                    _merge_metrics_from_pull(pull, completed_at),
+                )
+
+        offset_pull = dict(pull, created_at="2026-07-10T08:00:00+08:00")
+        self.assertEqual(
+            MergeMetrics(10, 1),
+            _merge_metrics_from_pull(offset_pull, "2026-07-11T00:00:00Z"),
+        )
+
+    def test_invalid_merge_metrics_fall_back_to_generic_success_copy(self):
+        snapshot = PrSnapshot(
+            7,
+            "title",
+            "w00123",
+            "abcdef123456",
+            "https://taichu.fun/gitea/SystemAgentDev/TaiChu/pulls/7",
+            "/ci merge",
+            "2026-07-10T10:00:00+08:00",
+            "merge-1",
+            "2026-07-10T10:05:00+08:00",
+            (),
+        )
+        invalid_pulls = (
+            {"created_at": "2026-07-10T00:00:00Z", "deletions": 1},
+            {"created_at": "2026-07-10T00:00:00Z", "additions": -1, "deletions": 1},
+            {
+                "created_at": "2026-07-10T00:00:00Z",
+                "additions": float("inf"),
+                "deletions": 1,
+            },
+            {
+                "created_at": "2026-07-10T00:00:00Z",
+                "additions": 1.5,
+                "deletions": 1,
+            },
+            {"created_at": "invalid", "additions": 1, "deletions": 1},
+        )
+
+        for pull in invalid_pulls:
+            with self.subTest(pull=pull):
+                self.assertIsNone(
+                    _merge_metrics_from_pull(pull, "2026-07-11T00:00:00Z")
+                )
+
+        self.assertIsNone(
+            _merge_metrics_from_pull(
+                {
+                    "created_at": "2026-07-12T00:00:00Z",
+                    "additions": 1,
+                    "deletions": 1,
+                },
+                "2026-07-11T00:00:00Z",
+            )
+        )
+        fallback = format_message(snapshot, (), merge_success=True)
+        self.assertIn("Merge 成功啦", fallback)
+        self.assertTrue(fallback.endswith(snapshot.url))
 
     def test_gate_templates_are_reduced_to_actionable_failure_summaries(self):
         snapshot = PrSnapshot(
@@ -702,15 +902,63 @@ class MonitorServiceTest(unittest.TestCase):
                 sender.calls[0][1],
             )
             self.assertEqual(
-                "🎉🎊 [TaiChu PR 7] Merge 成功啦！"
-                "这一关真的不容易，反复排障、耐心等待和一次次坚持都没有白费。"
-                "所有门禁终于全部通过，恭喜顺利合入！"
-                "辛苦了，为你鼓掌，这一刻值得好好庆祝！ 🥳✨🏆 "
+                "[TaiChu PR 7] Merge Successful 🔪（变更 120 行 · 历时 1 天） "
+                "小几百行代码一天搞定，改得非常准。不需要冗长废话就能把痛点切掉，"
+                "老医生的刀法。代码已上膛，干得漂亮！🍻 "
                 "【Taichu PRbot 自动发送，回复TD退订】 "
                 "查看 https://taichu.fun/gitea/SystemAgentDev/TaiChu/pulls/7",
                 sender.calls[1][1],
             )
+            self.assertEqual([7], client.pull_detail_attempts)
             self.assertTrue(all("\n" not in message for _, message in sender.calls))
+
+    def test_merge_metric_lookup_failure_still_sends_generic_success(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = FakeGiteaClient()
+            client.pull_detail_error = RuntimeError("detail unavailable")
+            sender = SequenceSender(["success"])
+            service, store = self.make_service(
+                temp_dir,
+                client,
+                sender,
+                Clock(
+                    "2026-07-10T10:05:00+08:00",
+                    "2026-07-10T10:08:00+08:00",
+                ),
+            )
+            with store:
+                baseline = service.poll_once()
+                client.comments = [
+                    {
+                        "id": 2,
+                        "body": "/ci merge",
+                        "created_at": "2026-07-10T10:06:00+08:00",
+                    }
+                ]
+                client.statuses = [
+                    {
+                        "id": 2,
+                        "context": "taichu/dev-cloud-preflight",
+                        "state": "success",
+                        "description": "preflight success",
+                        "updated_at": "2026-07-10T10:07:00+08:00",
+                    },
+                    {
+                        "id": 3,
+                        "context": "ci/merge-gate",
+                        "state": "success",
+                        "description": "merge gate success",
+                        "updated_at": "2026-07-10T10:07:00+08:00",
+                    },
+                ]
+                succeeded = service.poll_once()
+
+            self.assertEqual([], baseline.errors)
+            self.assertEqual([], succeeded.errors)
+            self.assertEqual([7], client.pull_detail_attempts)
+            self.assertEqual(1, len(sender.calls))
+            self.assertIn("Merge 成功啦", sender.calls[0][1])
+            self.assertNotIn("变更 ", sender.calls[0][1])
 
     def test_gitea_derived_sender_self_recipient_is_routed_to_fallback(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -857,6 +1105,63 @@ class MonitorServiceTest(unittest.TestCase):
                 self.assertEqual(1, failed.delivery_failures)
                 self.assertEqual(1, retried.delivered)
                 self.assertEqual(2, len(sender.calls))
+                self.assertEqual("sent", store.list_outbox()[0].status)
+
+    def test_merge_success_retry_reuses_the_persisted_message_and_metrics(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = FakeGiteaClient()
+            sender = SequenceSender(["failure", "success"])
+            service, store = self.make_service(
+                temp_dir,
+                client,
+                sender,
+                Clock(
+                    "2026-07-10T10:05:00+08:00",
+                    "2026-07-10T10:08:00+08:00",
+                    "2026-07-14T10:11:00+08:00",
+                ),
+            )
+            with store:
+                service.poll_once()
+                client.comments = [
+                    {
+                        "id": 2,
+                        "body": "/ci merge",
+                        "created_at": "2026-07-10T10:06:00+08:00",
+                    }
+                ]
+                client.statuses = [
+                    {
+                        "id": 2,
+                        "context": "taichu/dev-cloud-preflight",
+                        "state": "success",
+                        "description": "preflight success",
+                        "updated_at": "2026-07-10T10:07:00+08:00",
+                    },
+                    {
+                        "id": 3,
+                        "context": "ci/merge-gate",
+                        "state": "success",
+                        "description": "merge gate success",
+                        "updated_at": "2026-07-10T10:07:00+08:00",
+                    },
+                ]
+
+                failed = service.poll_once()
+                client.pull_detail = {
+                    "number": 7,
+                    "created_at": "2026-07-01T10:00:00+08:00",
+                    "additions": 3000,
+                    "deletions": 100,
+                }
+                retried = service.poll_once()
+
+                self.assertEqual(1, failed.delivery_failures)
+                self.assertEqual(1, retried.delivered)
+                self.assertEqual([7], client.pull_detail_attempts)
+                self.assertEqual(2, len(sender.calls))
+                self.assertEqual(sender.calls[0][1], sender.calls[1][1])
+                self.assertIn("变更 120 行 · 历时 1 天", sender.calls[1][1])
                 self.assertEqual("sent", store.list_outbox()[0].status)
 
     def test_timeout_is_uncertain_and_is_not_automatically_retried(self):
