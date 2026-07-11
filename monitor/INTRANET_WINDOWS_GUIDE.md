@@ -22,7 +22,7 @@
 1. 能打开 `https://taichu.fun/gitea/SystemAgentDev/TaiChu/pulls`；
 2. 能取得本仓库代码；推荐直接访问 GitHub，也可以使用公司允许的文件摆渡方式；
 3. 已安装并登录 WeLink，且内部文档要求的 `welink-cli` 已配置完成；
-4. 有一个能读取 `SystemAgentDev/TaiChu` 的 Gitea Personal Access Token（PAT）。
+4. 有一个能读取 `SystemAgentDev/TaiChu`、并能在 PR 下发表评论的 Gitea Personal Access Token（PAT）。
 5. 有一位知情同事可接收 WeLink 冒烟消息；`welink-cli` 登录账号不能给自己发消息。
 
 不要把 PAT、真实 W3 账号、`recipients.json` 或本地 SQLite 文件发到 GitHub。
@@ -120,7 +120,7 @@ Command discovery passed.
 
 ## 第 5 步：把 Gitea PAT 放进当前窗口
 
-在 Gitea 的“设置 -> 应用 -> 管理访问令牌”创建 PAT。令牌需要能够读取 `SystemAgentDev/TaiChu`。
+在 Gitea 的“设置 -> 应用 -> 管理访问令牌”创建 PAT。令牌既要能够读取 `SystemAgentDev/TaiChu`，也要能够在 PR/Issue 下发表评论；如果页面提供权限范围，请同时选择仓库读取和 Issue/评论写入权限。
 
 回到 PowerShell，执行：
 
@@ -305,7 +305,7 @@ py -3 -m monitor --strict-recipients --open-dashboard
 | `py` 无法识别 | 安装 Python 3，确认安装器勾选 PATH，然后重新打开 PowerShell |
 | `welink-cli` 无法识别 | 按内部文档安装和登录 CLI，再运行第 4 步 |
 | `401 Unauthorized` | PAT 无效、过期或权限不足；重新创建 PAT，再执行第 5 步 |
-| `403 Forbidden` | 当前账号无权读取仓库或 PAT 权限不足 |
+| `403 Forbidden` | 当前账号无权读取仓库、无权在 PR 下评论，或 PAT 权限不足 |
 | `failed to list open pull requests`、`urlopen error timed out` | 先执行下方 Gitea API 连通性检查；更新到最新 `main` 后可增大超时并重试 |
 | `errors` 不为 `0` | 在工作台查看扫描错误；先检查 Gitea、内网和 PAT |
 | 端口 `8790` 被占用 | 用 `py -3 -m monitor --dashboard-port 8791 --open-dashboard` |
