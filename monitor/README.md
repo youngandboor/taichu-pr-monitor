@@ -14,7 +14,7 @@
 - 每个 `/ci build` 轮次最多发送一条失败消息；多个失败项合并在同一行。
 - 失败摘要按门禁提炼：Approval 取“结果”，Codex 取 P0/P1 数量或特殊阻塞原因，PR Build/Merge Gate 取结构化失败任务，Preflight 只取 FAIL 用例行；Jenkins 链接、产物和长日志不会进入私聊。
 - Build 三门禁全部成功后不发成功消息，而是在 PR 中自动评论一次 `/ci merge`；提交前会重新读取最新评论中的最新 CI 命令，若已经是 `/ci merge` 就跳过；读取或评论失败只记录 warning，不重试、不额外通知；`--dry-run` 不会发送 WeLink，也不会写入 Gitea 评论。
-- 每个 `/ci merge` 轮次最多发送一条失败消息；Merge 两门禁成功后只为该 PR 读取一次详情，以 `additions + deletions` 的 Diff 变更量和“通知生成时间减 `created_at`”选择祝贺文案。详情读取或字段解析失败时仍发送通用成功消息，不影响通知。
+- 每个 `/ci merge` 轮次最多发送一条失败消息；Merge 两门禁成功后只为该 PR 读取一次详情，以 `additions + deletions` 的 Diff 变更量和“通知生成时间减 `created_at`”选择祝贺文案，但不在消息中展示这两项统计。详情读取或字段解析失败时仍发送通用成功消息，不影响通知。
 - 所有 WeLink 消息都是单行，PR URL 始终位于最后，避免 WeLink 错误识别链接边界。
 - SQLite 同时保存判定水位和发送 outbox，进程重启后不会重新群发。
 - 持续运行时提供运维工作台，集中查看失败 PR、完整发送记录、发送错误、磁盘容量和免打扰名单。

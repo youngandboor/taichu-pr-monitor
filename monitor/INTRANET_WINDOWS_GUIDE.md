@@ -134,7 +134,7 @@ Command discovery passed.
 
 支持 `single-line`、`merge-success`、`url-last`、`url-followed-by-text`、`long-single-line`、`multi-line` 和 `all`。`merge-success` 用于确认庆祝表情和成功文案在 WeLink 客户端中的显示；`url-last` 与 `url-followed-by-text` 使用同类正文，可直接对比 URL 后有无文字对链接识别的影响；`all` 会连续发送六条测试消息。每条都会显示字符数、UTF-8 字节数、行数、URL 是否位于最后、CLI 返回码和耗时。`multi-line` 只用于复现和对照，正式 PRbot 消息仍保持单行。
 
-成功文案中的“变更行数”是 Gitea 的 `additions + deletions`，包含本次 Diff 中的代码、配置、文档及生成文件，不代表净新增代码。持续时间从 PR 的 `created_at` 计算到成功消息生成时刻；不足 24 小时按 1 天展示。只有生成 Merge 成功消息时才额外读取该 PR 详情，普通三分钟扫描不会为所有开放 PR 批量读取行数。
+用于选择成功文案的“变更行数”是 Gitea 的 `additions + deletions`，包含本次 Diff 中的代码、配置、文档及生成文件，不代表净新增代码。持续时间从 PR 的 `created_at` 计算到成功消息生成时刻，不足 24 小时按 1 天参与分档。这两项统计只用于内部选择，不会出现在通知正文。只有生成 Merge 成功消息时才额外读取该 PR 详情，普通三分钟扫描不会为所有开放 PR 批量读取行数。
 
 ## 第 5 步：把 Gitea PAT 放进当前窗口
 
