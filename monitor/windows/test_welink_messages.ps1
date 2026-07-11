@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("single-line", "url-last", "url-followed-by-text", "long-single-line", "multi-line", "all")]
+    [ValidateSet("single-line", "merge-success", "url-last", "url-followed-by-text", "long-single-line", "multi-line", "all")]
     [string]$TestCase = "url-last",
     [string]$Receiver,
     [switch]$Send

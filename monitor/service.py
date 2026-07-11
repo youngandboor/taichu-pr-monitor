@@ -403,7 +403,10 @@ def format_message(snapshot: PrSnapshot, failures, merge_success: bool = False) 
     footer = "【Taichu PRbot 自动发送，回复TD退订】"
     if merge_success:
         return (
-            f"[TaiChu PR {snapshot.number}] 恭喜，Merge 已成功 "
+            f"🎉🎊 [TaiChu PR {snapshot.number}] Merge 成功啦！"
+            "这一关真的不容易，反复排障、耐心等待和一次次坚持都没有白费。"
+            "所有门禁终于全部通过，恭喜顺利合入！"
+            "辛苦了，为你鼓掌，这一刻值得好好庆祝！ 🥳✨🏆 "
             f"{footer} 查看 {snapshot.url}"
         )
 

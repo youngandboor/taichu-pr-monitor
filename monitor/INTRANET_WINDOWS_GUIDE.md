@@ -132,7 +132,7 @@ Command discovery passed.
 .\monitor\windows\test_welink_messages.ps1 -TestCase url-last -Receiver "对方W3账号" -Send
 ```
 
-支持 `single-line`、`url-last`、`url-followed-by-text`、`long-single-line`、`multi-line` 和 `all`。`url-last` 与 `url-followed-by-text` 使用同类正文，可直接对比 URL 后有无文字对链接识别的影响；`all` 会连续发送五条测试消息。每条都会显示字符数、UTF-8 字节数、行数、URL 是否位于最后、CLI 返回码和耗时。`multi-line` 只用于复现和对照，正式 PRbot 消息仍保持单行。
+支持 `single-line`、`merge-success`、`url-last`、`url-followed-by-text`、`long-single-line`、`multi-line` 和 `all`。`merge-success` 用于确认庆祝表情和成功文案在 WeLink 客户端中的显示；`url-last` 与 `url-followed-by-text` 使用同类正文，可直接对比 URL 后有无文字对链接识别的影响；`all` 会连续发送六条测试消息。每条都会显示字符数、UTF-8 字节数、行数、URL 是否位于最后、CLI 返回码和耗时。`multi-line` 只用于复现和对照，正式 PRbot 消息仍保持单行。
 
 ## 第 5 步：把 Gitea PAT 放进当前窗口
 

@@ -15,6 +15,7 @@ from .welink import WeLinkCli
 DEFAULT_PR_URL = "https://taichu.fun/gitea/SystemAgentDev/TaiChu/pulls/1111"
 PROBE_CASES = (
     "single-line",
+    "merge-success",
     "url-last",
     "url-followed-by-text",
     "long-single-line",
@@ -30,6 +31,14 @@ def build_probe_messages(
     long_detail = "；".join(f"检查项{i:02d}=失败摘要样例" for i in range(1, 25))
     return {
         "single-line": f"[TaiChu PRbot 格式测试] 单行纯文本；时间 {stamp}",
+        "merge-success": (
+            "🎉🎊 [TaiChu PR 1111] Merge 成功啦！"
+            "这一关真的不容易，反复排障、耐心等待和一次次坚持都没有白费。"
+            "所有门禁终于全部通过，恭喜顺利合入！"
+            "辛苦了，为你鼓掌，这一刻值得好好庆祝！ 🥳✨🏆 "
+            "【Taichu PRbot 自动发送，回复TD退订】 查看 "
+            f"{pr_url}"
+        ),
         "url-last": (
             "[TaiChu PR 1111] 发现问题：taichu/pr-build：消息格式测试 "
             "【Taichu PRbot 自动发送，回复TD退订】 查看 "
