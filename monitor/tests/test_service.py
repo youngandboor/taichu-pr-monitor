@@ -395,6 +395,34 @@ class MonitorServiceTest(unittest.TestCase):
             self.assertEqual([], client.comment_attempts)
             self.assertEqual([], sender.calls)
 
+    def test_disabled_outbound_comments_do_not_post_ci_merge(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = FakeGiteaClient()
+            sender = SequenceSender([])
+            service, store = self.make_service(
+                temp_dir,
+                client,
+                sender,
+                Clock("2026-07-10T10:05:00+08:00"),
+            )
+            service.allow_merge_comments = False
+            snapshot = PrSnapshot(
+                number=7,
+                title="Repair build",
+                author="w00123",
+                head_sha="abcdef123456",
+                url="https://taichu.fun/gitea/SystemAgentDev/TaiChu/pulls/7",
+                latest_ci_command="/ci build",
+                latest_ci_command_at="2026-07-10T10:00:00+08:00",
+                latest_ci_command_key="build-1",
+                scanned_at="2026-07-10T10:05:00+08:00",
+                failures=(),
+            )
+            with store:
+                service._try_comment_merge(snapshot)
+
+            self.assertEqual([], client.comment_attempts)
+
     def test_build_success_ignores_old_merge_and_explanatory_text(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             client = FakeGiteaClient()

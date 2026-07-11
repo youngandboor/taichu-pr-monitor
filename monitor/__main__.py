@@ -241,6 +241,7 @@ def main(argv=None) -> int:
             web_base=args.web_base,
             max_send_attempts=args.max_send_attempts,
             fetch_workers=args.fetch_workers,
+            allow_merge_comments=not args.dry_run,
             logger=logger,
         )
 

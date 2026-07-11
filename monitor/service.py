@@ -126,6 +126,7 @@ class MonitorService:
         max_comment_pages: int = 3,
         max_send_attempts: int = 3,
         fetch_workers: int = 6,
+        allow_merge_comments: bool = True,
         clock: Optional[Callable[[], str]] = None,
         logger: Optional[logging.Logger] = None,
     ) -> None:
@@ -140,6 +141,7 @@ class MonitorService:
         self.max_comment_pages = max_comment_pages
         self.max_send_attempts = max_send_attempts
         self.fetch_workers = max(1, fetch_workers)
+        self.allow_merge_comments = allow_merge_comments
         self.clock = clock or _utc_now
         self.logger = logger or logging.getLogger(__name__)
 
@@ -287,6 +289,13 @@ class MonitorService:
         )
 
     def _try_comment_merge(self, snapshot: PrSnapshot) -> None:
+        if not self.allow_merge_comments:
+            self.logger.info(
+                "skipping automatic /ci merge on PR #%s because outbound "
+                "comments are disabled",
+                snapshot.number,
+            )
+            return
         try:
             comments = self.client.get_issue_comments(
                 self.owner,
