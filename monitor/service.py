@@ -247,11 +247,14 @@ class MonitorService:
         self.allow_merge_comments = allow_merge_comments
         self.clock = clock or _utc_now
         self.logger = logger or logging.getLogger(__name__)
+        self._previous_snapshots = None
+        self._confirmed_merged_prs = set()
 
     def poll_once(self) -> PollReport:
         started = time.monotonic()
         scanned_at = self.clock()
         report = PollReport(scanned_at=scanned_at)
+        previous_snapshots = self._previous_snapshots
         missing_recipient_authors = set()
         recipients_ready = True
         listing_succeeded = False
@@ -270,6 +273,7 @@ class MonitorService:
                 limit=100,
             )
             pulls = [pr for pr in listed_pulls if not _ignored_pr_author(pr)]
+            open_pr_numbers = {_pr_number(pr) for pr in pulls}
             report.open_prs = len(pulls)
             listing_succeeded = True
         except Exception as error:  # Keep pending deliveries moving during a Gitea outage.
@@ -277,6 +281,7 @@ class MonitorService:
             report.errors.append(message)
             self.logger.error(message)
             pulls = []
+            open_pr_numbers = set()
 
         worker_count = min(self.fetch_workers, len(pulls)) if pulls else 1
         with ThreadPoolExecutor(max_workers=worker_count) as executor:
@@ -289,35 +294,35 @@ class MonitorService:
                 number = _pr_number(pr)
                 try:
                     snapshot = future.result()
-                    self.recipients.remember(snapshot.author, snapshot.author_w3)
-                    if recipients_ready and not self.recipients.resolve(
-                        snapshot.author,
-                        snapshot.author_w3,
-                    ):
-                        missing_recipient_authors.add(snapshot.author)
-                    current = self.store.get_tracker(snapshot.number)
-                    result = poll_tracker(current, snapshot)
-                    event = self._event_for(
+                    self._process_snapshot(
                         snapshot,
-                        result.notifications,
-                        result.merge_success,
-                    )
-                    self.store.apply_poll(
-                        snapshot.number,
-                        result.state,
-                        event,
-                        snapshot=snapshot,
-                    )
-                    if result.request_merge_comment:
-                        self._try_comment_merge(snapshot)
-                    report.scanned_prs += 1
-                    report.new_notifications += int(bool(result.notifications)) + int(
-                        result.merge_success
+                        report,
+                        missing_recipient_authors,
+                        recipients_ready,
+                        count_as_open_scan=True,
                     )
                 except Exception as error:
                     message = f"PR #{number or '?'} scan failed: {error}"
                     report.errors.append(message)
                     self.logger.error(message)
+
+        retained_terminal_prs = set()
+        if listing_succeeded:
+            pending_terminal_prs = set(self.store.list_terminal_pending())
+            for number in pending_terminal_prs & open_pr_numbers:
+                self.store.clear_terminal_pending(number)
+            pending_terminal_prs -= open_pr_numbers
+            if previous_snapshots is not None:
+                disappeared = set(previous_snapshots) - open_pr_numbers
+                self.store.mark_terminal_pending(disappeared)
+                pending_terminal_prs.update(disappeared)
+            retained_terminal_prs = self._check_disappeared_pulls(
+                pending_terminal_prs,
+                scanned_at,
+                report,
+                missing_recipient_authors,
+                recipients_ready,
+            )
 
         for author in sorted(missing_recipient_authors):
             message = f"no W3 recipient could be derived or mapped for Gitea author {author}"
@@ -327,7 +332,10 @@ class MonitorService:
         if recipients_ready:
             self._dispatch_outbox(report)
         if listing_succeeded:
-            self.store.prune_snapshots(_pr_number(pr) for pr in pulls)
+            self.store.prune_snapshots(open_pr_numbers | retained_terminal_prs)
+            self._previous_snapshots = {
+                snapshot.number: snapshot for snapshot in self.store.list_snapshots()
+            }
         report.duration_seconds = time.monotonic() - started
         self.store.record_scan(
             scanned_at=report.scanned_at,
@@ -342,6 +350,91 @@ class MonitorService:
             errors=report.errors,
         )
         return report
+
+    def _process_snapshot(
+        self,
+        snapshot: PrSnapshot,
+        report: PollReport,
+        missing_recipient_authors,
+        recipients_ready: bool,
+        *,
+        count_as_open_scan: bool,
+        merge_pull=None,
+    ):
+        self.recipients.remember(snapshot.author, snapshot.author_w3)
+        if recipients_ready and not self.recipients.resolve(
+            snapshot.author,
+            snapshot.author_w3,
+        ):
+            missing_recipient_authors.add(snapshot.author)
+        current = self.store.get_tracker(snapshot.number)
+        result = poll_tracker(current, snapshot)
+        event = self._event_for(
+            snapshot,
+            result.notifications,
+            result.merge_success,
+            merge_pull=merge_pull,
+        )
+        self.store.apply_poll(
+            snapshot.number,
+            result.state,
+            event,
+            snapshot=snapshot,
+        )
+        if result.request_merge_comment and not snapshot.merged:
+            self._try_comment_merge(snapshot)
+        if count_as_open_scan:
+            report.scanned_prs += 1
+        report.new_notifications += int(bool(result.notifications)) + int(
+            result.merge_success
+        )
+        return result
+
+    def _check_disappeared_pulls(
+        self,
+        terminal_pr_numbers,
+        scanned_at: str,
+        report: PollReport,
+        missing_recipient_authors,
+        recipients_ready: bool,
+    ):
+        retained = set()
+        for number in sorted(terminal_pr_numbers):
+            try:
+                pull = self.client.get_pull(self.owner, self.repo, number)
+                if _ignored_pr_author(pull):
+                    self.store.clear_terminal_pending(number)
+                    continue
+                if _pull_is_open(pull):
+                    retained.add(number)
+                    continue
+                if _pull_state(pull) != "closed":
+                    raise ValueError("pull request terminal response has no valid state")
+                merged_flag = pull.get("merged")
+                has_merged_at = bool(str(pull.get("merged_at") or "").strip())
+                if not isinstance(merged_flag, bool) or merged_flag != has_merged_at:
+                    raise ValueError("pull request terminal merge fields are inconsistent")
+                if not _pull_is_merged(pull):
+                    self.store.clear_terminal_pending(number)
+                    continue
+                snapshot = self._fetch_snapshot(pull, scanned_at)
+                self._process_snapshot(
+                    snapshot,
+                    report,
+                    missing_recipient_authors,
+                    recipients_ready,
+                    count_as_open_scan=False,
+                    merge_pull=pull,
+                )
+                self._reconcile_merged_outbox(number)
+                self._confirmed_merged_prs.add(number)
+                self.store.clear_terminal_pending(number)
+            except Exception as error:
+                retained.add(number)
+                message = f"PR #{number} terminal check failed: {error}"
+                report.errors.append(message)
+                self.logger.error(message)
+        return retained
 
     def _fetch_snapshot(self, pr, scanned_at: str) -> PrSnapshot:
         number = _pr_number(pr)
@@ -371,6 +464,7 @@ class MonitorService:
         snapshot: PrSnapshot,
         failures,
         merge_success: bool = False,
+        merge_pull=None,
     ) -> Optional[OutboxEvent]:
         if not failures and not merge_success:
             return None
@@ -384,7 +478,9 @@ class MonitorService:
                 + kind
             ).encode("utf-8")
         ).hexdigest()
-        merge_metrics = self._load_merge_metrics(snapshot) if merge_success else None
+        merge_metrics = (
+            self._load_merge_metrics(snapshot, merge_pull) if merge_success else None
+        )
         return OutboxEvent(
             event_key=digest,
             pr_number=snapshot.number,
@@ -398,10 +494,19 @@ class MonitorService:
             receiver_hint=snapshot.author_w3,
         )
 
-    def _load_merge_metrics(self, snapshot: PrSnapshot) -> Optional[MergeMetrics]:
+    def _load_merge_metrics(
+        self,
+        snapshot: PrSnapshot,
+        pull=None,
+    ) -> Optional[MergeMetrics]:
         try:
-            pull = self.client.get_pull(self.owner, self.repo, snapshot.number)
-            return _merge_metrics_from_pull(pull, snapshot.scanned_at)
+            detail = (
+                pull
+                if pull is not None
+                else self.client.get_pull(self.owner, self.repo, snapshot.number)
+            )
+            completed_at = snapshot.merged_at or snapshot.scanned_at
+            return _merge_metrics_from_pull(detail, completed_at)
         except Exception as error:
             self.logger.warning(
                 "could not load merge metrics for PR #%s; using the fallback "
@@ -458,13 +563,51 @@ class MonitorService:
             )
 
     def _dispatch_outbox(self, report: PollReport) -> None:
-        for record in self.store.list_dispatchable(self.max_send_attempts):
+        records = self.store.list_dispatchable(self.max_send_attempts)
+        latest_merge_success = {}
+        for record in records:
+            if (
+                record.author.strip().casefold() not in IGNORED_PR_AUTHORS
+                and _is_merge_success_message(record.message)
+            ):
+                latest_merge_success[record.pr_number] = record
+
+        merge_confirmed = {
+            pr_number: self._merge_confirmed(record, report)
+            for pr_number, record in latest_merge_success.items()
+        }
+
+        for record in records:
             if record.author.strip().casefold() in IGNORED_PR_AUTHORS:
                 self.store.update_delivery(
                     record.id,
                     "suppressed",
                     record.receiver,
                     "notification suppressed for ignored PR author",
+                    increment_attempt=False,
+                )
+                continue
+            if (
+                record.pr_number in self._confirmed_merged_prs
+                and _is_failure_message(record.message)
+            ):
+                self.store.update_delivery(
+                    record.id,
+                    "suppressed",
+                    record.receiver,
+                    "failure notification superseded by actual PR merge",
+                    increment_attempt=False,
+                )
+                continue
+            if (
+                _is_merge_success_message(record.message)
+                and latest_merge_success.get(record.pr_number) != record
+            ):
+                self.store.update_delivery(
+                    record.id,
+                    "suppressed",
+                    record.receiver,
+                    "merge success superseded by a newer message",
                     increment_attempt=False,
                 )
                 continue
@@ -493,6 +636,11 @@ class MonitorService:
                     "notification suppressed by recipient preference",
                     increment_attempt=False,
                 )
+                continue
+            if _is_merge_success_message(record.message) and not merge_confirmed.get(
+                record.pr_number,
+                False,
+            ):
                 continue
             result = self.sender.send(receiver, record.message)
             if result.status == "success":
@@ -528,6 +676,119 @@ class MonitorService:
             )
             report.delivery_failures += 1
             self.logger.error("WeLink delivery failed for outbox #%s", record.id)
+
+    def _merge_confirmed(self, record, report: PollReport) -> bool:
+        if self.store.is_terminal_pending(record.pr_number):
+            return False
+        if record.pr_number in self._confirmed_merged_prs:
+            return self._reconcile_merged_outbox(
+                record.pr_number,
+                preferred_success_id=record.id,
+            ) == record.id
+        try:
+            pull = self.client.get_pull(self.owner, self.repo, record.pr_number)
+        except Exception as error:
+            message = (
+                f"PR #{record.pr_number} merge confirmation failed for "
+                f"outbox #{record.id}: {error}"
+            )
+            report.errors.append(message)
+            self.logger.error(message)
+            return False
+
+        state = _pull_state(pull)
+        if state == "open":
+            return False
+        merged_flag = pull.get("merged") if isinstance(pull, dict) else None
+        has_merged_at = bool(
+            str(pull.get("merged_at") or "").strip()
+        ) if isinstance(pull, dict) else False
+        if state != "closed" or not isinstance(merged_flag, bool) or (
+            merged_flag != has_merged_at
+        ):
+            message = (
+                f"PR #{record.pr_number} returned inconsistent merge fields for "
+                f"outbox #{record.id}"
+            )
+            report.errors.append(message)
+            self.logger.error(message)
+            return False
+        if not merged_flag:
+            self.store.update_delivery(
+                record.id,
+                "suppressed",
+                receiver=record.receiver,
+                last_error="merge success suppressed because PR closed without merging",
+                increment_attempt=False,
+            )
+            return False
+
+        canonical_success_id = self._reconcile_merged_outbox(
+            record.pr_number,
+            preferred_success_id=record.id,
+        )
+        self._confirmed_merged_prs.add(record.pr_number)
+        return canonical_success_id == record.id
+
+    def _reconcile_merged_outbox(
+        self,
+        pr_number: int,
+        preferred_success_id: Optional[int] = None,
+    ) -> Optional[int]:
+        records = self.store.list_outbox_for_pr(pr_number)
+        successes = [
+            record for record in records if _is_merge_success_message(record.message)
+        ]
+        sent = [record for record in successes if record.status == "sent"]
+        uncertain = [
+            record for record in successes if record.status == "uncertain"
+        ]
+        preferred = next(
+            (
+                record
+                for record in successes
+                if record.id == preferred_success_id
+                and record.status not in {"sent", "suppressed"}
+            ),
+            None,
+        )
+        candidates = [
+            record
+            for record in successes
+            if record.status not in {"sent", "suppressed"}
+        ]
+        if sent:
+            canonical = max(sent, key=lambda record: record.id)
+        elif uncertain:
+            canonical = max(uncertain, key=lambda record: record.id)
+        elif preferred is not None:
+            canonical = preferred
+        else:
+            canonical = max(candidates, key=lambda record: record.id) if candidates else None
+
+        for record in records:
+            if record.status in {"sent", "suppressed"}:
+                continue
+            stale_failure = _is_failure_message(record.message)
+            stale_success = (
+                _is_merge_success_message(record.message)
+                and (canonical is None or record.id != canonical.id)
+            )
+            if not stale_failure and not stale_success:
+                continue
+            reason = (
+                "failure notification superseded by actual PR merge"
+                if stale_failure
+                else "merge success superseded by the canonical PR notification"
+            )
+            self.store.update_delivery(
+                record.id,
+                "suppressed",
+                record.receiver,
+                reason,
+                increment_attempt=False,
+            )
+        return canonical.id if canonical is not None else None
 
 
 def format_message(
@@ -661,6 +922,49 @@ def _ignored_pr_author(pr) -> bool:
     user = pr.get("user") if isinstance(pr, dict) else None
     login = user.get("login") if isinstance(user, dict) else ""
     return str(login or "").strip().casefold() in IGNORED_PR_AUTHORS
+
+
+def _pull_is_merged(pull) -> bool:
+    if not isinstance(pull, dict):
+        return False
+    return pull.get("merged") is True and bool(
+        str(pull.get("merged_at") or "").strip()
+    )
+
+
+def _pull_is_open(pull) -> bool:
+    return _pull_state(pull) == "open"
+
+
+def _pull_state(pull) -> str:
+    if not isinstance(pull, dict):
+        return ""
+    return str(pull.get("state") or "").strip().lower()
+
+
+def _is_merge_success_message(message: str) -> bool:
+    text = str(message or "")
+    if "发现问题：" in text or "[TaiChu PR " not in text:
+        return False
+    return any(
+        marker in text
+        for marker in (
+            "Merge Successful",
+            "PR Merged",
+            "Merged ",
+            "Merge Complete",
+            "Code Integrated",
+            "Finally Merged",
+            "Approved & Merged",
+            "PR MERGED",
+            "Merge 成功啦",
+        )
+    )
+
+
+def _is_failure_message(message: str) -> bool:
+    text = str(message or "")
+    return "[TaiChu PR " in text and "发现问题：" in text
 
 
 def _latest_ci_command(comments) -> str:

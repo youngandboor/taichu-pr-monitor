@@ -6,7 +6,7 @@
 
 ## 当前行为
 
-- 只监控 `https://taichu.fun/gitea/SystemAgentDev/TaiChu/pulls` 下的开放 PR。
+- 以 `https://taichu.fun/gitea/SystemAgentDev/TaiChu/pulls` 下的开放 PR 建立监控；上一轮仍开放、本轮消失的 PR 会额外核验一次最终状态。
 - Build 阶段只检查 `protected-file-approval`、`taichu/codex-pr-review`、`taichu/pr-build`。
 - Merge 阶段只检查 `taichu/dev-cloud-preflight`、`ci/merge-gate`。
 - 目标分支名包含 `release` 的 PR 使用发布门禁：Build 只检查 Approval 和 PR Build，Merge 只检查 Merge Gate。
@@ -16,7 +16,10 @@
 - 每个 `/ci build` 轮次最多发送一条失败消息；多个失败项合并在同一行。
 - 失败摘要按门禁提炼：Approval 取“结果”，Codex 取 P0/P1 数量或特殊阻塞原因，PR Build/Merge Gate 取结构化失败任务，Preflight 只取 FAIL 用例行；Jenkins 链接、产物和长日志不会进入私聊。
 - Build 三门禁全部成功后不发成功消息，而是在 PR 中自动评论一次 `/ci merge`；提交前会重新读取最新评论中的最新 CI 命令，若已经是 `/ci merge` 就跳过；读取或评论失败只记录 warning，不重试、不额外通知；`--dry-run` 不会发送 WeLink，也不会写入 Gitea 评论。
-- 每个 `/ci merge` 轮次最多发送一条失败消息；Merge 两门禁成功后只为该 PR 读取一次详情，以 `additions + deletions` 的 Diff 变更量和“通知生成时间减 `created_at`”选择祝贺文案。实际变更行数会以不带千分位的纯数字自然嵌入正文，持续时间只参与选档、不单独展示。详情读取或字段解析失败时仍发送通用成功消息，不影响通知。
+- 每个 `/ci merge` 轮次最多发送一条失败消息；Merge Gate 成功但 PR 仍开放时不发祝贺，只有 Gitea 最终确认 `state=closed`、`merged=true` 且存在 `merged_at` 后才发送成功消息。
+- 成功文案以 `additions + deletions` 的 Diff 变更量和 `merged_at - created_at` 选择档位。实际变更行数以不带千分位的纯数字自然嵌入正文，持续时间只参与选档、不单独展示；行数字段无法解析时仍发送通用成功消息。
+- 确认实际合入时会封存尚未发出的旧失败和重复成功，工作台不能再重试这些过期记录。
+- 终态核验只覆盖本机上一轮已经看到的开放 PR，不扫描历史关闭 PR，也不提供历史补发机制。
 - 所有 WeLink 消息都是单行，PR URL 始终位于最后，避免 WeLink 错误识别链接边界。
 - SQLite 同时保存判定水位和发送 outbox，进程重启后不会重新群发。
 - 持续运行时提供运维工作台，集中查看失败 PR、完整发送记录、发送错误、磁盘容量和免打扰名单。

@@ -104,6 +104,8 @@ class PrSnapshot:
     pr_build_summary: str = ""
     gate_results: Tuple[GateResult, ...] = ()
     base_ref: str = ""
+    merged: bool = False
+    merged_at: str = ""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -187,6 +189,8 @@ def build_pr_snapshot(
     base = pr.get("base") if isinstance(pr.get("base"), Mapping) else {}
     user = pr.get("user") if isinstance(pr.get("user"), Mapping) else {}
     head_sha = _value(head.get("sha")).strip()
+    pr_state = _value(pr.get("state")).strip().lower()
+    merged_at = _value(pr.get("merged_at")).strip()
     author = _value(user.get("login")).strip()
     if number <= 0:
         raise ValueError("pull request response has no valid number")
@@ -270,6 +274,12 @@ def build_pr_snapshot(
         pr_build_summary=pr_build.summary if pr_build else "",
         gate_results=gate_results,
         base_ref=_value(base.get("ref")).strip(),
+        merged=(
+            pr_state == "closed"
+            and pr.get("merged") is True
+            and bool(merged_at)
+        ),
+        merged_at=merged_at,
     )
 
 
@@ -312,7 +322,8 @@ def poll_tracker(state: TrackerState, snapshot: PrSnapshot) -> TrackerResult:
         else set()
     )
     new_command_round = snapshot.latest_ci_command_key != state.observed_command_key
-    failures = tuple(_stage_failures_after_command(snapshot))
+    terminal_merge = snapshot.latest_ci_command == "/ci merge" and snapshot.merged
+    failures = () if terminal_merge else tuple(_stage_failures_after_command(snapshot))
     notifications: Tuple[GateFailure, ...] = ()
     failure_round_key = round_failure_key(snapshot)
     if failures and failure_round_key not in notified:
@@ -329,14 +340,13 @@ def poll_tracker(state: TrackerState, snapshot: PrSnapshot) -> TrackerResult:
     completion_key = stage_success_key(snapshot)
     if completion_key and completion_key not in notified:
         completed_at = _stage_completed_at(snapshot)
-        if new_command_round or _happened_at_or_after_scan(
+        if snapshot.latest_ci_command == "/ci merge" and snapshot.merged:
+            merge_success = True
+        elif new_command_round or _happened_at_or_after_scan(
             completed_at,
             state.last_scanned_at,
         ):
-            if snapshot.latest_ci_command == "/ci build":
-                request_merge_comment = True
-            elif snapshot.latest_ci_command == "/ci merge":
-                merge_success = True
+            request_merge_comment = snapshot.latest_ci_command == "/ci build"
         notified.add(completion_key)
 
     next_state = TrackerState(
@@ -373,7 +383,12 @@ def round_failure_key(snapshot: PrSnapshot) -> str:
 
 def stage_success_key(snapshot: PrSnapshot) -> str:
     stage = _command_stage(snapshot.latest_ci_command)
-    if not stage or not _stage_succeeded_after_command(snapshot):
+    if not stage:
+        return ""
+    if stage == "merge":
+        if not snapshot.merged:
+            return ""
+    elif not _stage_succeeded_after_command(snapshot):
         return ""
     action = "merge-comment-attempted" if stage == "build" else "success-notified"
     return f"{snapshot.latest_ci_command_key}:{stage}:{action}"
@@ -872,6 +887,8 @@ def _stage_succeeded_after_command(snapshot: PrSnapshot) -> bool:
 
 
 def _stage_completed_at(snapshot: PrSnapshot) -> str:
+    if snapshot.latest_ci_command == "/ci merge" and snapshot.merged:
+        return snapshot.merged_at or snapshot.scanned_at
     contexts = _stage_contexts(snapshot)
     candidates = [
         result.updated_at
