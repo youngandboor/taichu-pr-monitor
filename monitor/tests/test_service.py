@@ -24,11 +24,16 @@ class FakeGiteaClient:
         self.pull_detail_error = None
         self.pull_detail = {
             "number": 7,
+            "state": "open",
+            "merged": False,
+            "merged_at": None,
             "created_at": "2026-07-10T10:00:00+08:00",
             "additions": 100,
             "deletions": 20,
             "changed_files": 2,
         }
+        self.open_pulls = True
+        self.list_error = None
         self.user = {"login": "w00123"}
         self.base_ref = "main"
         self.statuses = [
@@ -49,16 +54,9 @@ class FakeGiteaClient:
         ]
 
     def list_open_pulls(self, owner, repo, max_pages=10, limit=100):
-        return [
-            {
-                "number": 7,
-                "title": "Repair build",
-                "html_url": "https://taichu.fun/gitea/SystemAgentDev/TaiChu/pulls/7",
-                "user": dict(self.user),
-                "head": {"sha": "abcdef123456"},
-                "base": {"ref": self.base_ref},
-            }
-        ]
+        if self.list_error is not None:
+            raise self.list_error
+        return [self._pull_payload()] if self.open_pulls else []
 
     def get_statuses(self, owner, repo, sha):
         return list(self.statuses)
@@ -67,7 +65,23 @@ class FakeGiteaClient:
         self.pull_detail_attempts.append(number)
         if self.pull_detail_error is not None:
             raise self.pull_detail_error
-        return dict(self.pull_detail)
+        return self._pull_payload(include_detail=True)
+
+    def _pull_payload(self, include_detail=False):
+        payload = {
+            "number": 7,
+            "title": "Repair build",
+            "state": "open",
+            "merged": False,
+            "merged_at": None,
+            "html_url": "https://taichu.fun/gitea/SystemAgentDev/TaiChu/pulls/7",
+            "user": dict(self.user),
+            "head": {"sha": "abcdef123456"},
+            "base": {"ref": self.base_ref},
+        }
+        if include_detail:
+            payload.update(self.pull_detail)
+        return payload
 
     def get_issue_comments(self, owner, repo, number, max_pages):
         if self.comment_responses:
@@ -116,6 +130,17 @@ class StoreTest(unittest.TestCase):
                 restored = reopened.get_tracker(7)
 
             self.assertEqual(state, restored)
+
+    def test_terminal_pending_state_survives_restart_and_can_be_cleared(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = pathlib.Path(temp_dir) / "state.sqlite3"
+            with MonitorStore(path) as store:
+                store.mark_terminal_pending([9, 7, 9])
+
+            with MonitorStore(path) as reopened:
+                self.assertEqual([7, 9], reopened.list_terminal_pending())
+                reopened.clear_terminal_pending(7)
+                self.assertEqual([9], reopened.list_terminal_pending())
 
 
 class MonitorServiceTest(unittest.TestCase):
@@ -926,6 +951,7 @@ class MonitorServiceTest(unittest.TestCase):
                     "2026-07-10T10:08:00+08:00",
                     "2026-07-10T10:11:00+08:00",
                     "2026-07-10T10:14:00+08:00",
+                    "2026-07-10T10:17:00+08:00",
                 ),
             )
             with store:
@@ -963,10 +989,20 @@ class MonitorServiceTest(unittest.TestCase):
                         "updated_at": "2026-07-10T10:09:00+08:00",
                     },
                 ]
+                gate_completed = service.poll_once()
+                client.open_pulls = False
+                client.pull_detail.update(
+                    {
+                        "state": "closed",
+                        "merged": True,
+                        "merged_at": "2026-07-10T10:12:00+08:00",
+                    }
+                )
                 succeeded = service.poll_once()
                 repeated = service.poll_once()
 
                 self.assertEqual(1, failed.new_notifications)
+                self.assertEqual(0, gate_completed.new_notifications)
                 self.assertEqual(1, succeeded.new_notifications)
                 self.assertEqual(0, repeated.new_notifications)
                 self.assertEqual(2, len(store.list_outbox()))
@@ -990,10 +1026,271 @@ class MonitorServiceTest(unittest.TestCase):
             self.assertEqual([7], client.pull_detail_attempts)
             self.assertTrue(all("\n" not in message for _, message in sender.calls))
 
-    def test_merge_metric_lookup_failure_still_sends_generic_success(self):
+    def test_actual_merge_suppresses_an_undelivered_failure_before_success(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             client = FakeGiteaClient()
-            client.pull_detail_error = RuntimeError("detail unavailable")
+            sender = SequenceSender(["failure", "success"])
+            service, store = self.make_service(
+                temp_dir,
+                client,
+                sender,
+                Clock(
+                    "2026-07-10T10:05:00+08:00",
+                    "2026-07-10T10:08:00+08:00",
+                    "2026-07-10T10:11:00+08:00",
+                    "2026-07-10T10:14:00+08:00",
+                ),
+            )
+            with store:
+                service.poll_once()
+                client.comments = [
+                    {
+                        "id": 2,
+                        "body": "/ci merge",
+                        "created_at": "2026-07-10T10:06:00+08:00",
+                    }
+                ]
+                client.statuses = [
+                    {
+                        "id": 2,
+                        "context": "taichu/dev-cloud-preflight",
+                        "state": "failure",
+                        "description": "missing cloud artifact",
+                        "updated_at": "2026-07-10T10:07:00+08:00",
+                    }
+                ]
+                failed = service.poll_once()
+
+                client.open_pulls = False
+                client.pull_detail.update(
+                    {
+                        "state": "closed",
+                        "merged": True,
+                        "merged_at": "2026-07-10T10:09:00+08:00",
+                    }
+                )
+                merged = service.poll_once()
+                repeated = service.poll_once()
+                records = store.list_outbox()
+
+            self.assertEqual(1, failed.delivery_failures)
+            self.assertEqual(1, merged.delivered)
+            self.assertEqual(0, repeated.delivered)
+            self.assertEqual(["suppressed", "sent"], [record.status for record in records])
+            self.assertIn("发现问题：", sender.calls[0][1])
+            self.assertIn("Merge Successful", sender.calls[1][1])
+            self.assertEqual(2, len(sender.calls))
+
+    def test_actual_merge_persistently_suppresses_an_uncertain_failure(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = pathlib.Path(temp_dir) / "state.sqlite3"
+            client = FakeGiteaClient()
+            sender = SequenceSender(["timeout", "success"])
+            service, store = self.make_service(
+                temp_dir,
+                client,
+                sender,
+                Clock(
+                    "2026-07-10T10:05:00+08:00",
+                    "2026-07-10T10:08:00+08:00",
+                    "2026-07-10T10:11:00+08:00",
+                ),
+            )
+            with store:
+                service.poll_once()
+                client.comments = [
+                    {
+                        "id": 2,
+                        "body": "/ci merge",
+                        "created_at": "2026-07-10T10:06:00+08:00",
+                    }
+                ]
+                client.statuses = [
+                    {
+                        "id": 2,
+                        "context": "ci/merge-gate",
+                        "state": "failure",
+                        "description": "merge blocked",
+                        "updated_at": "2026-07-10T10:07:00+08:00",
+                    }
+                ]
+                uncertain = service.poll_once()
+                failure_id = store.list_outbox()[0].id
+
+                client.open_pulls = False
+                client.pull_detail.update(
+                    {
+                        "state": "closed",
+                        "merged": True,
+                        "merged_at": "2026-07-10T10:09:00+08:00",
+                    }
+                )
+                merged = service.poll_once()
+                records = store.list_outbox()
+
+            with MonitorStore(state_path) as restarted_store:
+                can_retry_stale_failure = restarted_store.requeue_delivery(failure_id)
+
+            self.assertEqual(1, uncertain.delivery_uncertain)
+            self.assertEqual(1, merged.delivered)
+            self.assertEqual(["suppressed", "sent"], [record.status for record in records])
+            self.assertFalse(can_retry_stale_failure)
+            self.assertEqual(2, len(sender.calls))
+
+    def test_terminal_fetch_failure_holds_legacy_success_until_reconciled(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = FakeGiteaClient()
+            client.comments = [
+                {
+                    "id": 2,
+                    "body": "/ci merge",
+                    "created_at": "2026-07-10T10:00:00+08:00",
+                }
+            ]
+            sender = SequenceSender(["success"])
+            store = MonitorStore(pathlib.Path(temp_dir) / "state.sqlite3")
+            snapshot = PrSnapshot(
+                number=7,
+                title="Repair build",
+                author="w00123",
+                head_sha="abcdef123456",
+                url="https://taichu.fun/gitea/SystemAgentDev/TaiChu/pulls/7",
+                latest_ci_command="/ci merge",
+                latest_ci_command_at="2026-07-10T09:55:00+08:00",
+                latest_ci_command_key="legacy-merge",
+                scanned_at="2026-07-10T10:00:00+08:00",
+                failures=(),
+            )
+            store.apply_poll(
+                7,
+                TrackerState("legacy-merge", frozenset(), True, snapshot.scanned_at),
+                OutboxEvent(
+                    "legacy-merge-success",
+                    7,
+                    "w00123",
+                    format_message(snapshot, (), merge_success=True),
+                ),
+                snapshot=snapshot,
+            )
+            service = MonitorService(
+                client=client,
+                store=store,
+                sender=sender,
+                recipients=RecipientDirectory(direct=True),
+                clock=Clock(
+                    "2026-07-10T10:05:00+08:00",
+                    "2026-07-10T10:08:00+08:00",
+                    "2026-07-10T10:11:00+08:00",
+                ),
+            )
+
+            with store:
+                service.poll_once()
+                client.open_pulls = False
+                client.pull_detail.update(
+                    {
+                        "state": "closed",
+                        "merged": True,
+                        "merged_at": "2026-07-10T10:07:00+08:00",
+                    }
+                )
+                original_get_statuses = client.get_statuses
+
+                def fail_terminal_snapshot(owner, repo, sha):
+                    raise RuntimeError("statuses unavailable")
+
+                client.get_statuses = fail_terminal_snapshot
+                failed = service.poll_once()
+                calls_during_failure = list(sender.calls)
+                client.get_statuses = original_get_statuses
+                recovered = service.poll_once()
+                records = store.list_outbox()
+
+            self.assertTrue(any("terminal check failed" in item for item in failed.errors))
+            self.assertEqual([], calls_during_failure)
+            self.assertEqual(1, recovered.delivered)
+            self.assertEqual(["suppressed", "sent"], [record.status for record in records])
+            self.assertEqual(1, len(sender.calls))
+
+    def test_actual_merge_suppresses_a_dead_legacy_success_before_current_copy(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = pathlib.Path(temp_dir) / "state.sqlite3"
+            client = FakeGiteaClient()
+            client.comments = [
+                {
+                    "id": 2,
+                    "body": "/ci merge",
+                    "created_at": "2026-07-10T10:00:00+08:00",
+                }
+            ]
+            sender = SequenceSender(["success"])
+            store = MonitorStore(state_path)
+            snapshot = PrSnapshot(
+                number=7,
+                title="Repair build",
+                author="w00123",
+                head_sha="abcdef123456",
+                url="https://taichu.fun/gitea/SystemAgentDev/TaiChu/pulls/7",
+                latest_ci_command="/ci merge",
+                latest_ci_command_at="2026-07-10T09:55:00+08:00",
+                latest_ci_command_key="legacy-merge",
+                scanned_at="2026-07-10T10:00:00+08:00",
+                failures=(),
+            )
+            store.apply_poll(
+                7,
+                TrackerState("legacy-merge", frozenset(), True, snapshot.scanned_at),
+                OutboxEvent(
+                    "legacy-dead-success",
+                    7,
+                    "w00123",
+                    format_message(snapshot, (), merge_success=True),
+                ),
+                snapshot=snapshot,
+            )
+            legacy_id = store.list_outbox()[0].id
+            store.update_delivery(
+                legacy_id,
+                "dead",
+                "w00123",
+                "old delivery exhausted",
+                increment_attempt=True,
+            )
+            service = MonitorService(
+                client=client,
+                store=store,
+                sender=sender,
+                recipients=RecipientDirectory(direct=True),
+                clock=Clock(
+                    "2026-07-10T10:05:00+08:00",
+                    "2026-07-10T10:08:00+08:00",
+                ),
+            )
+
+            with store:
+                service.poll_once()
+                client.open_pulls = False
+                client.pull_detail.update(
+                    {
+                        "state": "closed",
+                        "merged": True,
+                        "merged_at": "2026-07-10T10:07:00+08:00",
+                    }
+                )
+                merged = service.poll_once()
+                records = store.list_outbox()
+
+            with MonitorStore(state_path) as restarted_store:
+                can_retry_legacy = restarted_store.requeue_delivery(legacy_id)
+
+            self.assertEqual(1, merged.delivered)
+            self.assertEqual(["suppressed", "sent"], [record.status for record in records])
+            self.assertFalse(can_retry_legacy)
+            self.assertEqual(1, len(sender.calls))
+
+    def test_invalid_merge_metrics_still_send_generic_success(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = FakeGiteaClient()
             sender = SequenceSender(["success"])
             service, store = self.make_service(
                 temp_dir,
@@ -1002,6 +1299,7 @@ class MonitorServiceTest(unittest.TestCase):
                 Clock(
                     "2026-07-10T10:05:00+08:00",
                     "2026-07-10T10:08:00+08:00",
+                    "2026-07-10T10:11:00+08:00",
                 ),
             )
             with store:
@@ -1029,14 +1327,273 @@ class MonitorServiceTest(unittest.TestCase):
                         "updated_at": "2026-07-10T10:07:00+08:00",
                     },
                 ]
+                gate_completed = service.poll_once()
+                client.open_pulls = False
+                client.pull_detail = {
+                    "number": 7,
+                    "state": "closed",
+                    "merged": True,
+                    "merged_at": "2026-07-10T10:09:00+08:00",
+                    "created_at": "2026-07-10T10:00:00+08:00",
+                    "deletions": 20,
+                }
                 succeeded = service.poll_once()
 
             self.assertEqual([], baseline.errors)
+            self.assertEqual([], gate_completed.errors)
             self.assertEqual([], succeeded.errors)
             self.assertEqual([7], client.pull_detail_attempts)
             self.assertEqual(1, len(sender.calls))
             self.assertIn("Merge 成功啦", sender.calls[0][1])
             self.assertNotIn("变更 ", sender.calls[0][1])
+
+    def test_legacy_queued_success_waits_until_the_pr_is_actually_merged(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = FakeGiteaClient()
+            client.comments = [
+                {
+                    "id": 2,
+                    "body": "/ci merge",
+                    "created_at": "2026-07-10T10:00:00+08:00",
+                }
+            ]
+            sender = SequenceSender(["success"])
+            store = MonitorStore(pathlib.Path(temp_dir) / "state.sqlite3")
+            snapshot = PrSnapshot(
+                number=7,
+                title="Repair build",
+                author="w00123",
+                head_sha="abcdef123456",
+                url="https://taichu.fun/gitea/SystemAgentDev/TaiChu/pulls/7",
+                latest_ci_command="/ci merge",
+                latest_ci_command_at="2026-07-10T10:00:00+08:00",
+                latest_ci_command_key="merge-1",
+                scanned_at="2026-07-10T10:05:00+08:00",
+                failures=(),
+            )
+            store.apply_poll(
+                7,
+                TrackerState(
+                    "merge-1",
+                    frozenset({"merge-1:merge:success-notified"}),
+                    True,
+                    "2026-07-10T10:05:00+08:00",
+                ),
+                OutboxEvent(
+                    "legacy-merge-success",
+                    7,
+                    "w00123",
+                    format_message(snapshot, (), merge_success=True),
+                ),
+                snapshot=snapshot,
+            )
+            service = MonitorService(
+                client=client,
+                store=store,
+                sender=sender,
+                recipients=RecipientDirectory(direct=True),
+                clock=Clock(
+                    "2026-07-10T10:08:00+08:00",
+                    "2026-07-10T10:11:00+08:00",
+                ),
+            )
+
+            with store:
+                still_open = service.poll_once()
+                pending = store.list_outbox()[0]
+                calls_while_open = list(sender.calls)
+
+                client.open_pulls = False
+                client.pull_detail.update(
+                    {
+                        "state": "closed",
+                        "merged": True,
+                        "merged_at": "2026-07-10T10:09:00+08:00",
+                    }
+                )
+                merged = service.poll_once()
+                terminal_records = store.list_outbox()
+
+            self.assertEqual(0, still_open.delivered)
+            self.assertEqual("pending", pending.status)
+            self.assertEqual([], calls_while_open)
+            self.assertEqual(1, merged.delivered)
+            self.assertEqual(
+                {"sent", "suppressed"},
+                {record.status for record in terminal_records},
+            )
+            self.assertEqual(1, len(sender.calls))
+            self.assertEqual([7, 7], client.pull_detail_attempts)
+
+    def test_closed_unmerged_pr_is_dropped_without_a_success_message(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = FakeGiteaClient()
+            client.comments = [
+                {
+                    "id": 2,
+                    "body": "/ci merge",
+                    "created_at": "2026-07-10T10:00:00+08:00",
+                }
+            ]
+            sender = SequenceSender([])
+            service, store = self.make_service(
+                temp_dir,
+                client,
+                sender,
+                Clock(
+                    "2026-07-10T10:05:00+08:00",
+                    "2026-07-10T10:08:00+08:00",
+                ),
+            )
+
+            with store:
+                service.poll_once()
+                client.open_pulls = False
+                client.pull_detail.update(
+                    {
+                        "state": "closed",
+                        "merged": False,
+                        "merged_at": None,
+                    }
+                )
+                closed = service.poll_once()
+                snapshots = store.list_snapshots()
+
+            self.assertEqual(0, closed.new_notifications)
+            self.assertEqual([], closed.errors)
+            self.assertEqual([], sender.calls)
+            self.assertEqual([], snapshots)
+            self.assertEqual([7], client.pull_detail_attempts)
+
+    def test_failed_terminal_lookup_is_retained_and_retried_next_poll(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = FakeGiteaClient()
+            client.comments = [
+                {
+                    "id": 2,
+                    "body": "/ci merge",
+                    "created_at": "2026-07-10T10:00:00+08:00",
+                }
+            ]
+            sender = SequenceSender(["success"])
+            service, store = self.make_service(
+                temp_dir,
+                client,
+                sender,
+                Clock(
+                    "2026-07-10T10:05:00+08:00",
+                    "2026-07-10T10:08:00+08:00",
+                    "2026-07-10T10:11:00+08:00",
+                ),
+            )
+
+            with store:
+                service.poll_once()
+                client.open_pulls = False
+                client.pull_detail_error = RuntimeError("detail unavailable")
+                failed = service.poll_once()
+                retained = store.list_snapshots()
+                pending = store.list_terminal_pending()
+
+                client.pull_detail_error = None
+                client.pull_detail.update(
+                    {
+                        "state": "closed",
+                        "merged": True,
+                        "merged_at": "2026-07-10T10:09:00+08:00",
+                    }
+                )
+                restarted = MonitorService(
+                    client=client,
+                    store=store,
+                    sender=sender,
+                    recipients=RecipientDirectory(direct=True),
+                    clock=Clock("2026-07-10T10:11:00+08:00"),
+                )
+                recovered = restarted.poll_once()
+                pruned = store.list_snapshots()
+                cleared = store.list_terminal_pending()
+
+            self.assertTrue(any("terminal check failed" in item for item in failed.errors))
+            self.assertEqual(1, len(retained))
+            self.assertEqual([7], pending)
+            self.assertEqual(1, recovered.new_notifications)
+            self.assertEqual([], recovered.errors)
+            self.assertEqual([], pruned)
+            self.assertEqual([], cleared)
+            self.assertEqual(1, len(sender.calls))
+            self.assertEqual([7, 7], client.pull_detail_attempts)
+
+    def test_restart_does_not_treat_an_unmarked_stale_snapshot_as_a_merge(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = FakeGiteaClient()
+            client.comments = [
+                {
+                    "id": 2,
+                    "body": "/ci merge",
+                    "created_at": "2026-07-10T10:00:00+08:00",
+                }
+            ]
+            sender = SequenceSender([])
+            store = MonitorStore(pathlib.Path(temp_dir) / "state.sqlite3")
+            first = MonitorService(
+                client=client,
+                store=store,
+                sender=sender,
+                recipients=RecipientDirectory(direct=True),
+                clock=Clock("2026-07-10T10:05:00+08:00"),
+            )
+
+            with store:
+                first.poll_once()
+                client.open_pulls = False
+                client.pull_detail.update(
+                    {
+                        "state": "closed",
+                        "merged": True,
+                        "merged_at": "2026-07-10T10:09:00+08:00",
+                    }
+                )
+                restarted = MonitorService(
+                    client=client,
+                    store=store,
+                    sender=sender,
+                    recipients=RecipientDirectory(direct=True),
+                    clock=Clock("2026-07-10T12:00:00+08:00"),
+                )
+                report = restarted.poll_once()
+                snapshots = store.list_snapshots()
+
+            self.assertEqual(0, report.new_notifications)
+            self.assertEqual([], report.errors)
+            self.assertEqual([], snapshots)
+            self.assertEqual([], client.pull_detail_attempts)
+            self.assertEqual([], sender.calls)
+
+    def test_open_pull_listing_failure_does_not_trigger_terminal_checks_or_pruning(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = FakeGiteaClient()
+            sender = SequenceSender([])
+            service, store = self.make_service(
+                temp_dir,
+                client,
+                sender,
+                Clock(
+                    "2026-07-10T10:05:00+08:00",
+                    "2026-07-10T10:08:00+08:00",
+                ),
+            )
+
+            with store:
+                service.poll_once()
+                client.list_error = RuntimeError("Gitea unavailable")
+                failed = service.poll_once()
+                snapshots = store.list_snapshots()
+
+            self.assertTrue(any("failed to list" in item for item in failed.errors))
+            self.assertEqual(1, len(snapshots))
+            self.assertEqual([], client.pull_detail_attempts)
+            self.assertEqual([], sender.calls)
 
     def test_gitea_derived_sender_self_recipient_is_routed_to_fallback(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1296,6 +1853,7 @@ class MonitorServiceTest(unittest.TestCase):
                     "2026-07-10T10:05:00+08:00",
                     "2026-07-10T10:08:00+08:00",
                     "2026-07-14T10:11:00+08:00",
+                    "2026-07-14T10:14:00+08:00",
                 ),
             )
             with store:
@@ -1324,6 +1882,15 @@ class MonitorServiceTest(unittest.TestCase):
                     },
                 ]
 
+                gate_completed = service.poll_once()
+                client.open_pulls = False
+                client.pull_detail.update(
+                    {
+                        "state": "closed",
+                        "merged": True,
+                        "merged_at": "2026-07-10T10:09:00+08:00",
+                    }
+                )
                 failed = service.poll_once()
                 client.pull_detail = {
                     "number": 7,
@@ -1333,6 +1900,7 @@ class MonitorServiceTest(unittest.TestCase):
                 }
                 retried = service.poll_once()
 
+                self.assertEqual(0, gate_completed.new_notifications)
                 self.assertEqual(1, failed.delivery_failures)
                 self.assertEqual(1, retried.delivered)
                 self.assertEqual([7], client.pull_detail_attempts)

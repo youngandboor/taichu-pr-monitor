@@ -280,6 +280,13 @@ class MonitorStore:
         ).fetchall()
         return [_outbox_record(row) for row in rows]
 
+    def list_outbox_for_pr(self, pr_number: int) -> List[OutboxRecord]:
+        rows = self.connection.execute(
+            "SELECT * FROM delivery_outbox WHERE pr_number = ? ORDER BY id ASC",
+            (int(pr_number),),
+        ).fetchall()
+        return [_outbox_record(row) for row in rows]
+
     def outbox_counts(self) -> Dict[str, int]:
         counts = {status: 0 for status in OUTBOX_STATUSES}
         total = 0
@@ -418,6 +425,40 @@ class MonitorStore:
                 f"DELETE FROM pr_snapshot WHERE pr_number NOT IN ({placeholders})",
                 numbers,
             )
+
+    def mark_terminal_pending(self, pr_numbers: Sequence[int]) -> None:
+        numbers = sorted({int(number) for number in pr_numbers if int(number) > 0})
+        if not numbers:
+            return
+        now = _utc_now()
+        with self.connection:
+            self.connection.executemany(
+                """
+                INSERT OR IGNORE INTO pr_terminal_pending (pr_number, created_at)
+                VALUES (?, ?)
+                """,
+                ((number, now) for number in numbers),
+            )
+
+    def clear_terminal_pending(self, pr_number: int) -> None:
+        with self.connection:
+            self.connection.execute(
+                "DELETE FROM pr_terminal_pending WHERE pr_number = ?",
+                (int(pr_number),),
+            )
+
+    def list_terminal_pending(self) -> List[int]:
+        rows = self.connection.execute(
+            "SELECT pr_number FROM pr_terminal_pending ORDER BY pr_number"
+        ).fetchall()
+        return [int(row["pr_number"]) for row in rows]
+
+    def is_terminal_pending(self, pr_number: int) -> bool:
+        row = self.connection.execute(
+            "SELECT 1 FROM pr_terminal_pending WHERE pr_number = ?",
+            (int(pr_number),),
+        ).fetchone()
+        return row is not None
 
     def record_scan(
         self,
@@ -583,6 +624,14 @@ class MonitorStore:
                     latest_ci_command_at TEXT NOT NULL,
                     scanned_at TEXT NOT NULL,
                     failures_json TEXT NOT NULL
+                )
+                """
+            )
+            self.connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS pr_terminal_pending (
+                    pr_number INTEGER PRIMARY KEY,
+                    created_at TEXT NOT NULL
                 )
                 """
             )

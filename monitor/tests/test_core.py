@@ -618,6 +618,8 @@ class TrackerTest(unittest.TestCase):
         failures=(),
         gate_results=(),
         base_ref="main",
+        merged=False,
+        merged_at="",
     ):
         return PrSnapshot(
             number=7,
@@ -632,6 +634,8 @@ class TrackerTest(unittest.TestCase):
             failures=tuple(failures),
             gate_results=tuple(gate_results),
             base_ref=base_ref,
+            merged=merged,
+            merged_at=merged_at,
         )
 
     def gate(self, context, state, updated_at, summary=""):
@@ -983,6 +987,8 @@ class TrackerTest(unittest.TestCase):
             command_key="merge-1",
             command_at="2026-07-10T10:09:00+08:00",
             base_ref="Br_develop_device_release",
+            merged=True,
+            merged_at="2026-07-10T10:10:30+08:00",
             failures=(
                 GateFailure(
                     "taichu/dev-cloud-preflight",
@@ -1075,6 +1081,8 @@ class TrackerTest(unittest.TestCase):
             command_key="merge-1",
             command_at="2026-07-10T10:06:00+08:00",
             gate_results=self.merge_successes("2026-07-10T10:09:00+08:00"),
+            merged=True,
+            merged_at="2026-07-10T10:10:00+08:00",
         )
 
         failure_result = poll_tracker(baseline, failed)
@@ -1085,6 +1093,75 @@ class TrackerTest(unittest.TestCase):
         self.assertTrue(success_result.merge_success)
         self.assertFalse(repeated.merge_success)
         self.assertEqual(2, len(success_result.state.notified_failure_keys))
+
+    def test_merge_gate_success_waits_for_actual_gitea_merge(self):
+        baseline = poll_tracker(
+            TrackerState.empty(),
+            self.snapshot(
+                scanned_at="2026-07-10T10:05:00+08:00",
+                command="/ci merge",
+                command_key="merge-1",
+                command_at="2026-07-10T10:00:00+08:00",
+                merged=False,
+            ),
+        ).state
+        gate_complete_but_open = self.snapshot(
+            scanned_at="2026-07-10T10:08:00+08:00",
+            command="/ci merge",
+            command_key="merge-1",
+            command_at="2026-07-10T10:00:00+08:00",
+            gate_results=self.merge_successes("2026-07-10T10:07:00+08:00"),
+            merged=False,
+        )
+
+        gate_result = poll_tracker(baseline, gate_complete_but_open)
+
+        self.assertFalse(gate_result.merge_success)
+        self.assertEqual(frozenset(), gate_result.state.notified_failure_keys)
+
+        actually_merged = self.snapshot(
+            scanned_at="2026-07-10T10:11:00+08:00",
+            command="/ci merge",
+            command_key="merge-1",
+            command_at="2026-07-10T10:00:00+08:00",
+            gate_results=self.merge_successes("2026-07-10T10:07:00+08:00"),
+            failures=(
+                GateFailure(
+                    "ci/merge-gate",
+                    "2026-07-10T10:08:00+08:00",
+                    "stale failure superseded by actual merge",
+                ),
+            ),
+            merged=True,
+            merged_at="2026-07-10T10:09:00+08:00",
+        )
+
+        merged_result = poll_tracker(gate_result.state, actually_merged)
+        repeated = poll_tracker(merged_result.state, actually_merged)
+
+        self.assertTrue(merged_result.merge_success)
+        self.assertEqual((), merged_result.notifications)
+        self.assertFalse(repeated.merge_success)
+
+    def test_observed_open_pr_merge_is_not_lost_to_an_older_merged_at_watermark(self):
+        observed_open = TrackerState(
+            "merge-1",
+            frozenset(),
+            True,
+            "2026-07-10T10:10:00+08:00",
+        )
+        terminal = self.snapshot(
+            scanned_at="2026-07-10T10:13:00+08:00",
+            command="/ci merge",
+            command_key="merge-1",
+            command_at="2026-07-10T10:00:00+08:00",
+            merged=True,
+            merged_at="2026-07-10T10:09:00+08:00",
+        )
+
+        result = poll_tracker(observed_open, terminal)
+
+        self.assertTrue(result.merge_success)
 
     def test_old_failure_before_latest_command_is_ignored(self):
         baseline = poll_tracker(
