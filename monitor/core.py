@@ -30,10 +30,17 @@ BUILD_PRECONDITION_CONTEXTS = (
     "taichu/codex-pr-review",
 )
 
+RELEASE_BUILD_GATE_CONTEXTS = (
+    "protected-file-approval",
+    "taichu/pr-build",
+)
+
 MERGE_GATE_CONTEXTS = (
     "taichu/dev-cloud-preflight",
     "ci/merge-gate",
 )
+
+RELEASE_MERGE_GATE_CONTEXTS = ("ci/merge-gate",)
 
 TRUSTED_GATE_COMMENT_AUTHORS = frozenset({"taichu-ci-bot"})
 
@@ -96,6 +103,7 @@ class PrSnapshot:
     pr_build_updated_at: str = ""
     pr_build_summary: str = ""
     gate_results: Tuple[GateResult, ...] = ()
+    base_ref: str = ""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -176,6 +184,7 @@ def build_pr_snapshot(
 ) -> PrSnapshot:
     number = _integer(pr.get("number"))
     head = pr.get("head") if isinstance(pr.get("head"), Mapping) else {}
+    base = pr.get("base") if isinstance(pr.get("base"), Mapping) else {}
     user = pr.get("user") if isinstance(pr.get("user"), Mapping) else {}
     head_sha = _value(head.get("sha")).strip()
     author = _value(user.get("login")).strip()
@@ -260,6 +269,7 @@ def build_pr_snapshot(
         pr_build_updated_at=pr_build.updated_at if pr_build else "",
         pr_build_summary=pr_build.summary if pr_build else "",
         gate_results=gate_results,
+        base_ref=_value(base.get("ref")).strip(),
     )
 
 
@@ -827,13 +837,11 @@ def _initialize_baseline(state: TrackerState, snapshot: PrSnapshot) -> TrackerSt
 
 
 def _stage_failures_after_command(snapshot: PrSnapshot) -> Iterable[GateFailure]:
-    contexts = _stage_contexts(snapshot.latest_ci_command)
+    contexts = _stage_contexts(snapshot)
     for failure in snapshot.failures:
         if (
             failure.context in contexts
-            and _gate_result_belongs_to_round(
-                snapshot.latest_ci_command,
-                failure.context,
+            and _failure_belongs_to_round(
                 failure.updated_at,
                 snapshot.latest_ci_command_at,
             )
@@ -842,7 +850,7 @@ def _stage_failures_after_command(snapshot: PrSnapshot) -> Iterable[GateFailure]
 
 
 def _stage_succeeded_after_command(snapshot: PrSnapshot) -> bool:
-    contexts = _stage_contexts(snapshot.latest_ci_command)
+    contexts = _stage_contexts(snapshot)
     if (
         not contexts
         or not snapshot.latest_ci_command_key
@@ -864,7 +872,7 @@ def _stage_succeeded_after_command(snapshot: PrSnapshot) -> bool:
 
 
 def _stage_completed_at(snapshot: PrSnapshot) -> str:
-    contexts = _stage_contexts(snapshot.latest_ci_command)
+    contexts = _stage_contexts(snapshot)
     candidates = [
         result.updated_at
         for result in snapshot.gate_results
@@ -888,11 +896,21 @@ def _gate_result_belongs_to_round(
     )
 
 
-def _stage_contexts(command: str) -> Tuple[str, ...]:
+def _failure_belongs_to_round(result_at: str, command_at: str) -> bool:
+    return bool(
+        result_at
+        and command_at
+        and _time_key(result_at) >= _time_key(command_at)
+    )
+
+
+def _stage_contexts(snapshot: PrSnapshot) -> Tuple[str, ...]:
+    command = snapshot.latest_ci_command
+    release_target = "release" in snapshot.base_ref.strip().casefold()
     if command == "/ci build":
-        return BUILD_GATE_CONTEXTS
+        return RELEASE_BUILD_GATE_CONTEXTS if release_target else BUILD_GATE_CONTEXTS
     if command == "/ci merge":
-        return MERGE_GATE_CONTEXTS
+        return RELEASE_MERGE_GATE_CONTEXTS if release_target else MERGE_GATE_CONTEXTS
     return ()
 
 

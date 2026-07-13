@@ -25,6 +25,9 @@ from .gitea import DEFAULT_OWNER, DEFAULT_REPO, DEFAULT_WEB_BASE
 from .state import MonitorStore, OutboxEvent
 
 
+IGNORED_PR_AUTHORS = frozenset({"taichu-ci-bot"})
+
+
 MERGE_SUCCESS_COPY = {
     1: (
         (
@@ -260,12 +263,13 @@ class MonitorService:
             self.logger.error("recipient mapping error: %s", error)
 
         try:
-            pulls = self.client.list_open_pulls(
+            listed_pulls = self.client.list_open_pulls(
                 self.owner,
                 self.repo,
                 max_pages=self.max_pull_pages,
                 limit=100,
             )
+            pulls = [pr for pr in listed_pulls if not _ignored_pr_author(pr)]
             report.open_prs = len(pulls)
             listing_succeeded = True
         except Exception as error:  # Keep pending deliveries moving during a Gitea outage.
@@ -455,6 +459,15 @@ class MonitorService:
 
     def _dispatch_outbox(self, report: PollReport) -> None:
         for record in self.store.list_dispatchable(self.max_send_attempts):
+            if record.author.strip().casefold() in IGNORED_PR_AUTHORS:
+                self.store.update_delivery(
+                    record.id,
+                    "suppressed",
+                    record.receiver,
+                    "notification suppressed for ignored PR author",
+                    increment_attempt=False,
+                )
+                continue
             receiver = self.recipients.resolve(record.author, record.receiver)
             if not receiver:
                 self.store.update_delivery(
@@ -642,6 +655,12 @@ def _pr_number(pr) -> int:
         return int(pr.get("number") or 0)
     except (AttributeError, TypeError, ValueError):
         return 0
+
+
+def _ignored_pr_author(pr) -> bool:
+    user = pr.get("user") if isinstance(pr, dict) else None
+    login = user.get("login") if isinstance(user, dict) else ""
+    return str(login or "").strip().casefold() in IGNORED_PR_AUTHORS
 
 
 def _latest_ci_command(comments) -> str:
