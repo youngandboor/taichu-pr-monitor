@@ -30,6 +30,7 @@ class FakeGiteaClient:
             "changed_files": 2,
         }
         self.user = {"login": "w00123"}
+        self.base_ref = "main"
         self.statuses = [
             {
                 "id": 1,
@@ -55,6 +56,7 @@ class FakeGiteaClient:
                 "html_url": "https://taichu.fun/gitea/SystemAgentDev/TaiChu/pulls/7",
                 "user": dict(self.user),
                 "head": {"sha": "abcdef123456"},
+                "base": {"ref": self.base_ref},
             }
         ]
 
@@ -613,6 +615,55 @@ class MonitorServiceTest(unittest.TestCase):
             self.assertEqual(0, repeated.new_notifications)
             self.assertEqual(1, len(client.comment_attempts))
 
+    def test_release_build_success_comments_merge_without_codex_gate(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = FakeGiteaClient()
+            client.base_ref = "Br_develop_cloud_release"
+            sender = SequenceSender([])
+            service, store = self.make_service(
+                temp_dir,
+                client,
+                sender,
+                Clock(
+                    "2026-07-10T10:05:00+08:00",
+                    "2026-07-10T10:08:00+08:00",
+                ),
+            )
+            with store:
+                service.poll_once()
+                client.comments = [
+                    {
+                        "id": 2,
+                        "body": "/ci build",
+                        "created_at": "2026-07-10T10:06:00+08:00",
+                    }
+                ]
+                client.statuses = [
+                    {
+                        "id": 2,
+                        "context": "protected-file-approval",
+                        "state": "success",
+                        "description": "approval success",
+                        "updated_at": "2026-07-10T09:55:00+08:00",
+                    },
+                    {
+                        "id": 3,
+                        "context": "taichu/pr-build",
+                        "state": "success",
+                        "description": "build success",
+                        "updated_at": "2026-07-10T10:07:00+08:00",
+                    },
+                ]
+
+                report = service.poll_once()
+
+            self.assertEqual([], report.errors)
+            self.assertEqual(
+                [("SystemAgentDev", "TaiChu", 7, "/ci merge")],
+                client.comment_attempts,
+            )
+            self.assertEqual([], sender.calls)
+
     def test_build_success_does_not_duplicate_a_human_merge_comment(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             client = FakeGiteaClient()
@@ -1073,6 +1124,105 @@ class MonitorServiceTest(unittest.TestCase):
                 report = service.poll_once()
 
             self.assertTrue(any("no W3 recipient" in error for error in report.errors))
+            self.assertEqual([], sender.calls)
+
+    def test_bot_authored_pr_is_ignored_before_scanning_or_recipient_lookup(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = FakeGiteaClient()
+            client.user = {"login": "  TAICHU-CI-BOT  "}
+
+            def unexpected_fetch(*args, **kwargs):
+                raise AssertionError("ignored bot PR must not be fetched")
+
+            client.get_statuses = unexpected_fetch
+            client.get_issue_comments = unexpected_fetch
+            sender = SequenceSender([])
+            store = MonitorStore(pathlib.Path(temp_dir) / "state.sqlite3")
+            service = MonitorService(
+                client=client,
+                store=store,
+                sender=sender,
+                recipients=RecipientDirectory(direct=False),
+                clock=Clock("2026-07-10T10:05:00+08:00"),
+            )
+
+            with store:
+                report = service.poll_once()
+                snapshots = store.list_snapshots()
+
+            self.assertEqual(0, report.open_prs)
+            self.assertEqual(0, report.scanned_prs)
+            self.assertEqual([], report.errors)
+            self.assertEqual([], snapshots)
+            self.assertEqual([], sender.calls)
+
+    def test_similar_bot_login_is_not_ignored(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = FakeGiteaClient()
+            client.user = {"login": "taichu-ci-bot-extra"}
+            sender = SequenceSender([])
+            service, store = self.make_service(
+                temp_dir,
+                client,
+                sender,
+                Clock("2026-07-10T10:05:00+08:00"),
+            )
+
+            with store:
+                report = service.poll_once()
+
+            self.assertEqual(1, report.open_prs)
+            self.assertEqual(1, report.scanned_prs)
+            self.assertEqual([], report.errors)
+
+    def test_legacy_bot_outbox_states_are_suppressed_without_welink_lookup(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = FakeGiteaClient()
+            client.user = {"login": "taichu-ci-bot"}
+            sender = SequenceSender([])
+            store = MonitorStore(pathlib.Path(temp_dir) / "state.sqlite3")
+            for index, status in enumerate(("pending", "failed", "unmapped"), start=1):
+                event_key = f"legacy-bot-{status}"
+                store.apply_poll(
+                    index,
+                    TrackerState.empty(),
+                    OutboxEvent(
+                        event_key,
+                        index,
+                        "Taichu-CI-Bot",
+                        "legacy bot message",
+                    ),
+                )
+                record = next(
+                    item for item in store.list_outbox() if item.event_key == event_key
+                )
+                if status != "pending":
+                    store.update_delivery(
+                        record.id,
+                        status,
+                        "",
+                        "legacy error",
+                        increment_attempt=False,
+                    )
+            service = MonitorService(
+                client=client,
+                store=store,
+                sender=sender,
+                recipients=RecipientDirectory(direct=False),
+                clock=Clock("2026-07-10T10:05:00+08:00"),
+            )
+
+            with store:
+                report = service.poll_once()
+                records = store.list_outbox()
+
+            self.assertEqual(
+                {"suppressed"},
+                {record.status for record in records},
+            )
+            self.assertTrue(all(record.attempts == 0 for record in records))
+            self.assertEqual(0, report.unmapped)
+            self.assertEqual([], report.errors)
             self.assertEqual([], sender.calls)
 
     def test_explicit_mapping_overrides_gitea_derived_w3(self):

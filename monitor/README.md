@@ -9,6 +9,8 @@
 - 只监控 `https://taichu.fun/gitea/SystemAgentDev/TaiChu/pulls` 下的开放 PR。
 - Build 阶段只检查 `protected-file-approval`、`taichu/codex-pr-review`、`taichu/pr-build`。
 - Merge 阶段只检查 `taichu/dev-cloud-preflight`、`ci/merge-gate`。
+- 目标分支名包含 `release` 的 PR 使用发布门禁：Build 只检查 Approval 和 PR Build，Merge 只检查 Merge Gate。
+- 完全忽略由 `taichu-ci-bot` 创建的 PR，不扫描、不发送、不在工作台中展示；历史待发记录也会自动标记为已跳过。
 - 忽略旧 head、队列状态、构建耗时评论和旧命令之前的失败。
 - 第一次看到某个 PR 时只建立基线，不发送已有历史失败或历史成功。
 - 每个 `/ci build` 轮次最多发送一条失败消息；多个失败项合并在同一行。
