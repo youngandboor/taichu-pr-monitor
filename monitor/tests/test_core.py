@@ -4,6 +4,7 @@ from monitor.core import (
     DEFAULT_POLL_INTERVAL_SECONDS,
     GateFailure,
     GateResult,
+    PROBLEM_FINGERPRINT_PREFIX,
     PrSnapshot,
     TrackerState,
     build_pr_snapshot,
@@ -839,7 +840,12 @@ class TrackerTest(unittest.TestCase):
 
         self.assertEqual((), result.notifications)
         self.assertTrue(result.state.initialized)
-        self.assertEqual(1, len(result.state.notified_failure_keys))
+        self.assertTrue(
+            any(
+                key.startswith(PROBLEM_FINGERPRINT_PREFIX)
+                for key in result.state.notified_failure_keys
+            )
+        )
 
     def test_build_round_combines_current_failures_and_notifies_only_once(self):
         baseline = poll_tracker(
@@ -886,6 +892,364 @@ class TrackerTest(unittest.TestCase):
             [item.context for item in first.notifications],
         )
         self.assertEqual((), second.notifications)
+
+    def test_approval_failure_is_not_repeated_in_later_build_rounds(self):
+        baseline = poll_tracker(
+            TrackerState.empty(),
+            self.snapshot(scanned_at="2026-07-10T10:05:00+08:00"),
+        ).state
+        first = poll_tracker(
+            baseline,
+            self.snapshot(
+                scanned_at="2026-07-10T10:08:00+08:00",
+                failures=(
+                    GateFailure(
+                        "protected-file-approval",
+                        "2026-07-10T10:06:00+08:00",
+                        "approval missing for config A",
+                    ),
+                ),
+            ),
+        )
+        next_round = poll_tracker(
+            first.state,
+            self.snapshot(
+                scanned_at="2026-07-10T10:13:00+08:00",
+                command_key="cmd-2",
+                command_at="2026-07-10T10:10:00+08:00",
+                failures=(
+                    GateFailure(
+                        "protected-file-approval",
+                        "2026-07-10T10:12:00+08:00",
+                        "approval missing for a different protected file",
+                    ),
+                ),
+            ),
+        )
+
+        self.assertEqual(
+            ["protected-file-approval"],
+            [failure.context for failure in first.notifications],
+        )
+        self.assertEqual((), next_round.notifications)
+
+    def test_baselined_approval_is_not_announced_in_a_later_round(self):
+        baseline = poll_tracker(
+            TrackerState.empty(),
+            self.snapshot(
+                scanned_at="2026-07-10T10:05:00+08:00",
+                failures=(
+                    GateFailure(
+                        "protected-file-approval",
+                        "2026-07-10T10:02:00+08:00",
+                        "historical approval failure",
+                    ),
+                ),
+            ),
+        )
+        later = poll_tracker(
+            baseline.state,
+            self.snapshot(
+                scanned_at="2026-07-10T10:13:00+08:00",
+                command_key="cmd-2",
+                command_at="2026-07-10T10:10:00+08:00",
+                failures=(
+                    GateFailure(
+                        "protected-file-approval",
+                        "2026-07-10T10:12:00+08:00",
+                        "approval failure after another change",
+                    ),
+                ),
+            ),
+        )
+
+        self.assertEqual((), baseline.notifications)
+        self.assertEqual((), later.notifications)
+
+    def test_legacy_round_flag_silently_seeds_the_visible_problem(self):
+        legacy = TrackerState(
+            "cmd-1",
+            frozenset({"cmd-1:build:failure-notified"}),
+            True,
+            "2026-07-10T10:08:00+08:00",
+        )
+        visible = self.snapshot(
+            scanned_at="2026-07-10T10:11:00+08:00",
+            failures=(
+                GateFailure(
+                    "taichu/pr-build",
+                    "2026-07-10T10:07:00+08:00",
+                    "compile error in module foo",
+                ),
+            ),
+        )
+
+        migrated = poll_tracker(legacy, visible)
+        repeated = poll_tracker(
+            migrated.state,
+            self.snapshot(
+                scanned_at="2026-07-10T10:16:00+08:00",
+                command_key="cmd-2",
+                command_at="2026-07-10T10:13:00+08:00",
+                failures=(
+                    GateFailure(
+                        "taichu/pr-build",
+                        "2026-07-10T10:15:00+08:00",
+                        "compile error in module foo",
+                    ),
+                ),
+            ),
+        )
+
+        self.assertEqual((), migrated.notifications)
+        self.assertTrue(
+            any(
+                key.startswith(PROBLEM_FINGERPRINT_PREFIX)
+                for key in migrated.state.notified_failure_keys
+            )
+        )
+        self.assertEqual((), repeated.notifications)
+
+    def test_same_cleaned_failure_summary_is_not_repeated_across_rounds(self):
+        baseline = poll_tracker(
+            TrackerState.empty(),
+            self.snapshot(scanned_at="2026-07-10T10:05:00+08:00"),
+        ).state
+        first = poll_tracker(
+            baseline,
+            self.snapshot(
+                scanned_at="2026-07-10T10:08:00+08:00",
+                failures=(
+                    GateFailure(
+                        "taichu/pr-build",
+                        "2026-07-10T10:06:00+08:00",
+                        "2026-07-10 10:06:00 | compile error in module foo",
+                    ),
+                ),
+            ),
+        )
+        repeated = poll_tracker(
+            first.state,
+            self.snapshot(
+                scanned_at="2026-07-10T10:13:00+08:00",
+                command_key="cmd-2",
+                command_at="2026-07-10T10:10:00+08:00",
+                failures=(
+                    GateFailure(
+                        "taichu/pr-build",
+                        "2026-07-10T10:12:00+08:00",
+                        "2026-07-10 10:12:00 | compile error in module foo",
+                    ),
+                ),
+            ),
+        )
+
+        self.assertEqual(1, len(first.notifications))
+        self.assertEqual((), repeated.notifications)
+
+    def test_same_summary_from_a_different_gate_is_a_new_problem(self):
+        baseline = poll_tracker(
+            TrackerState.empty(),
+            self.snapshot(scanned_at="2026-07-10T10:05:00+08:00"),
+        ).state
+        build_failure = poll_tracker(
+            baseline,
+            self.snapshot(
+                scanned_at="2026-07-10T10:08:00+08:00",
+                failures=(
+                    GateFailure(
+                        "taichu/pr-build",
+                        "2026-07-10T10:06:00+08:00",
+                        "shared failure summary",
+                    ),
+                ),
+            ),
+        )
+        merge_failure = poll_tracker(
+            build_failure.state,
+            self.snapshot(
+                scanned_at="2026-07-10T10:13:00+08:00",
+                command="/ci merge",
+                command_key="merge-2",
+                command_at="2026-07-10T10:10:00+08:00",
+                failures=(
+                    GateFailure(
+                        "taichu/dev-cloud-preflight",
+                        "2026-07-10T10:12:00+08:00",
+                        "shared failure summary",
+                    ),
+                ),
+            ),
+        )
+
+        self.assertEqual(
+            ["taichu/dev-cloud-preflight"],
+            [failure.context for failure in merge_failure.notifications],
+        )
+
+    def test_new_failure_summary_is_the_only_problem_in_the_next_message(self):
+        baseline = poll_tracker(
+            TrackerState.empty(),
+            self.snapshot(scanned_at="2026-07-10T10:05:00+08:00"),
+        ).state
+        first = poll_tracker(
+            baseline,
+            self.snapshot(
+                scanned_at="2026-07-10T10:08:00+08:00",
+                failures=(
+                    GateFailure(
+                        "protected-file-approval",
+                        "2026-07-10T10:06:00+08:00",
+                        "approval missing",
+                    ),
+                    GateFailure(
+                        "taichu/pr-build",
+                        "2026-07-10T10:07:00+08:00",
+                        "compile error in module foo",
+                    ),
+                ),
+            ),
+        )
+        changed = poll_tracker(
+            first.state,
+            self.snapshot(
+                scanned_at="2026-07-10T10:13:00+08:00",
+                command_key="cmd-2",
+                command_at="2026-07-10T10:10:00+08:00",
+                failures=(
+                    GateFailure(
+                        "protected-file-approval",
+                        "2026-07-10T10:11:00+08:00",
+                        "approval still missing",
+                    ),
+                    GateFailure(
+                        "taichu/pr-build",
+                        "2026-07-10T10:12:00+08:00",
+                        "unit test failed in module bar",
+                    ),
+                ),
+            ),
+        )
+
+        self.assertEqual(2, len(first.notifications))
+        self.assertEqual(
+            ["taichu/pr-build"],
+            [failure.context for failure in changed.notifications],
+        )
+        self.assertEqual("unit test failed in module bar", changed.notifications[0].summary)
+
+    def test_late_new_problem_can_notify_in_the_next_command_round(self):
+        baseline = poll_tracker(
+            TrackerState.empty(),
+            self.snapshot(scanned_at="2026-07-10T10:05:00+08:00"),
+        ).state
+        first = poll_tracker(
+            baseline,
+            self.snapshot(
+                scanned_at="2026-07-10T10:08:00+08:00",
+                failures=(
+                    GateFailure(
+                        "protected-file-approval",
+                        "2026-07-10T10:06:00+08:00",
+                        "approval missing",
+                    ),
+                ),
+            ),
+        )
+        late = poll_tracker(
+            first.state,
+            self.snapshot(
+                scanned_at="2026-07-10T10:11:00+08:00",
+                failures=(
+                    GateFailure(
+                        "protected-file-approval",
+                        "2026-07-10T10:06:00+08:00",
+                        "approval missing",
+                    ),
+                    GateFailure(
+                        "taichu/pr-build",
+                        "2026-07-10T10:10:00+08:00",
+                        "unit test failed in module bar",
+                    ),
+                ),
+            ),
+        )
+        next_round = poll_tracker(
+            late.state,
+            self.snapshot(
+                scanned_at="2026-07-10T10:16:00+08:00",
+                command_key="cmd-2",
+                command_at="2026-07-10T10:13:00+08:00",
+                failures=(
+                    GateFailure(
+                        "taichu/pr-build",
+                        "2026-07-10T10:15:00+08:00",
+                        "unit test failed in module bar",
+                    ),
+                ),
+            ),
+        )
+
+        self.assertEqual((), late.notifications)
+        self.assertEqual(
+            ["taichu/pr-build"],
+            [failure.context for failure in next_round.notifications],
+        )
+
+    def test_seen_problem_does_not_consume_a_new_rounds_notification(self):
+        baseline = poll_tracker(
+            TrackerState.empty(),
+            self.snapshot(scanned_at="2026-07-10T10:05:00+08:00"),
+        ).state
+        first = poll_tracker(
+            baseline,
+            self.snapshot(
+                scanned_at="2026-07-10T10:08:00+08:00",
+                failures=(
+                    GateFailure(
+                        "taichu/pr-build",
+                        "2026-07-10T10:06:00+08:00",
+                        "compile error in module foo",
+                    ),
+                ),
+            ),
+        )
+        duplicate_only = poll_tracker(
+            first.state,
+            self.snapshot(
+                scanned_at="2026-07-10T10:13:00+08:00",
+                command_key="cmd-2",
+                command_at="2026-07-10T10:10:00+08:00",
+                failures=(
+                    GateFailure(
+                        "taichu/pr-build",
+                        "2026-07-10T10:12:00+08:00",
+                        "compile error in module foo",
+                    ),
+                ),
+            ),
+        )
+        genuinely_new = poll_tracker(
+            duplicate_only.state,
+            self.snapshot(
+                scanned_at="2026-07-10T10:16:00+08:00",
+                command_key="cmd-2",
+                command_at="2026-07-10T10:10:00+08:00",
+                failures=(
+                    GateFailure(
+                        "taichu/pr-build",
+                        "2026-07-10T10:15:00+08:00",
+                        "unit test failed in module bar",
+                    ),
+                ),
+            ),
+        )
+
+        self.assertEqual((), duplicate_only.notifications)
+        self.assertEqual(
+            ["unit test failed in module bar"],
+            [failure.summary for failure in genuinely_new.notifications],
+        )
 
     def test_new_build_does_not_reuse_old_precondition_failures(self):
         baseline = poll_tracker(
@@ -1092,7 +1456,12 @@ class TrackerTest(unittest.TestCase):
         self.assertEqual(1, len(failure_result.notifications))
         self.assertTrue(success_result.merge_success)
         self.assertFalse(repeated.merge_success)
-        self.assertEqual(2, len(success_result.state.notified_failure_keys))
+        self.assertTrue(
+            any(
+                key.startswith(PROBLEM_FINGERPRINT_PREFIX)
+                for key in success_result.state.notified_failure_keys
+            )
+        )
 
     def test_merge_gate_success_waits_for_actual_gitea_merge(self):
         baseline = poll_tracker(

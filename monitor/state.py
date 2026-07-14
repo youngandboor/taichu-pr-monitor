@@ -414,6 +414,13 @@ class MonitorStore:
         )
         return failing + clear
 
+    def get_snapshot(self, pr_number: int) -> Optional[PrSnapshot]:
+        row = self.connection.execute(
+            "SELECT * FROM pr_snapshot WHERE pr_number = ?",
+            (int(pr_number),),
+        ).fetchone()
+        return _snapshot_record(row) if row is not None else None
+
     def prune_snapshots(self, open_pr_numbers: Sequence[int]) -> None:
         numbers = sorted({int(number) for number in open_pr_numbers if int(number) > 0})
         with self.connection:

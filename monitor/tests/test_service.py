@@ -2,13 +2,22 @@ import pathlib
 import tempfile
 import unittest
 
-from monitor.core import GateFailure, PrSnapshot, TrackerState
+from monitor.core import (
+    APPROVAL_PROBLEM_KEY,
+    PROBLEM_FINGERPRINT_PREFIX,
+    PROBLEM_HISTORY_MARKER,
+    GateFailure,
+    PrSnapshot,
+    TrackerState,
+)
 from monitor.service import (
     MergeMetrics,
     MonitorService,
     PollReport,
     RecipientDirectory,
     _merge_metrics_from_pull,
+    _messaged_failures,
+    _notification_event_key,
     format_message,
 )
 from monitor.state import MonitorStore, OutboxEvent, OutboxRecord
@@ -184,6 +193,32 @@ class MonitorServiceTest(unittest.TestCase):
             message,
         )
         self.assertNotIn("\n", message)
+
+    def test_legacy_build_success_footer_is_not_part_of_failure_summary(self):
+        failures = tuple(
+            _messaged_failures(
+                [
+                    "[TaiChu PR #7] CI Build 已通过\n"
+                    "标题：Repair build\n"
+                    "同时发现 1 个新问题：\n"
+                    "- taichu/codex-pr-review："
+                    "Codex found 1 P0/P1 principle issue(s)\n"
+                    "下一步：打开 PR，确认后评论 /ci merge\n"
+                    "查看：https://example.test/7"
+                ]
+            )
+        )
+
+        self.assertEqual(
+            (
+                GateFailure(
+                    "taichu/codex-pr-review",
+                    "",
+                    "Codex found 1 P0/P1 principle issue(s)",
+                ),
+            ),
+            failures,
+        )
 
     def test_merge_success_copy_covers_all_duration_and_line_buckets(self):
         snapshot = PrSnapshot(
@@ -559,17 +594,609 @@ class MonitorServiceTest(unittest.TestCase):
                 self.assertEqual(1, len(snapshots))
                 self.assertEqual("taichu/pr-build", snapshots[0].failures[0].context)
 
+            client.comments = [
+                {
+                    "id": 2,
+                    "body": "/ci build",
+                    "created_at": "2026-07-10T10:09:00+08:00",
+                }
+            ]
+            client.statuses = [
+                {
+                    "id": 3,
+                    "context": "taichu/pr-build",
+                    "state": "failure",
+                    "description": "compile error in module foo",
+                    "updated_at": "2026-07-10T10:10:00+08:00",
+                }
+            ]
             restarted, reopened = self.make_service(
                 temp_dir,
                 client,
                 sender,
-                Clock("2026-07-10T10:11:00+08:00"),
+                Clock(
+                    "2026-07-10T10:11:00+08:00",
+                    "2026-07-10T10:14:00+08:00",
+                ),
             )
             with reopened:
                 repeated = restarted.poll_once()
+                client.statuses = [
+                    {
+                        "id": 4,
+                        "context": "taichu/pr-build",
+                        "state": "failure",
+                        "description": "unit test failed in module bar",
+                        "updated_at": "2026-07-10T10:13:00+08:00",
+                    }
+                ]
+                changed = restarted.poll_once()
 
             self.assertEqual(0, repeated.new_notifications)
+            self.assertEqual(1, changed.new_notifications)
+            self.assertEqual(2, len(sender.calls))
+            self.assertIn("unit test failed in module bar", sender.calls[1][1])
+
+    def test_repeated_approval_is_removed_but_dashboard_keeps_all_failures(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = FakeGiteaClient()
+            sender = SequenceSender(["success", "success"])
+            service, store = self.make_service(
+                temp_dir,
+                client,
+                sender,
+                Clock(
+                    "2026-07-10T10:05:00+08:00",
+                    "2026-07-10T10:08:00+08:00",
+                    "2026-07-10T10:13:00+08:00",
+                ),
+            )
+            with store:
+                service.poll_once()
+                client.statuses = [
+                    {
+                        "id": 2,
+                        "context": "protected-file-approval",
+                        "state": "failure",
+                        "description": "approval missing",
+                        "updated_at": "2026-07-10T10:06:00+08:00",
+                    },
+                    {
+                        "id": 3,
+                        "context": "taichu/pr-build",
+                        "state": "failure",
+                        "description": "compile error in module foo",
+                        "updated_at": "2026-07-10T10:07:00+08:00",
+                    },
+                ]
+                first = service.poll_once()
+                client.comments = [
+                    {
+                        "id": 2,
+                        "body": "/ci build",
+                        "created_at": "2026-07-10T10:10:00+08:00",
+                    }
+                ]
+                client.statuses = [
+                    {
+                        "id": 4,
+                        "context": "protected-file-approval",
+                        "state": "failure",
+                        "description": "approval missing for another file",
+                        "updated_at": "2026-07-10T10:11:00+08:00",
+                    },
+                    {
+                        "id": 5,
+                        "context": "taichu/pr-build",
+                        "state": "failure",
+                        "description": "unit test failed in module bar",
+                        "updated_at": "2026-07-10T10:12:00+08:00",
+                    },
+                ]
+                second = service.poll_once()
+                snapshot = store.list_snapshots()[0]
+
+            self.assertEqual(1, first.new_notifications)
+            self.assertEqual(1, second.new_notifications)
+            self.assertIn("protected-file-approval", sender.calls[0][1])
+            self.assertNotIn("protected-file-approval", sender.calls[1][1])
+            self.assertIn("unit test failed in module bar", sender.calls[1][1])
+            self.assertEqual(
+                {"protected-file-approval", "taichu/pr-build"},
+                {failure.context for failure in snapshot.failures},
+            )
+
+    def test_legacy_approval_outbox_seeds_the_pr_lifetime_dedupe_key(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = FakeGiteaClient()
+            client.comments = [
+                {
+                    "id": 2,
+                    "body": "/ci build",
+                    "created_at": "2026-07-10T10:06:00+08:00",
+                }
+            ]
+            client.statuses = [
+                {
+                    "id": 2,
+                    "context": "protected-file-approval",
+                    "state": "failure",
+                    "description": "approval missing again",
+                    "updated_at": "2026-07-10T10:07:00+08:00",
+                },
+                {
+                    "id": 3,
+                    "context": "taichu/pr-build",
+                    "state": "failure",
+                    "description": "compile error in module foo",
+                    "updated_at": "2026-07-10T10:07:30+08:00",
+                },
+            ]
+            sender = SequenceSender([])
+            store = MonitorStore(pathlib.Path(temp_dir) / "state.sqlite3")
+            old_snapshot = PrSnapshot(
+                number=7,
+                title="Repair build",
+                author="w00123",
+                head_sha="abcdef123456",
+                url="https://taichu.fun/gitea/SystemAgentDev/TaiChu/pulls/7",
+                latest_ci_command="/ci build",
+                latest_ci_command_at="2026-07-10T09:55:00+08:00",
+                latest_ci_command_key="legacy-build",
+                scanned_at="2026-07-10T10:00:00+08:00",
+                failures=(),
+            )
+            store.apply_poll(
+                7,
+                TrackerState(
+                    "legacy-build",
+                    frozenset({"legacy-build:build:failure-notified"}),
+                    True,
+                    old_snapshot.scanned_at,
+                ),
+                OutboxEvent(
+                    "legacy-approval",
+                    7,
+                    "w00123",
+                    "[TaiChu PR 7] 发现问题：protected-file-approval：approval missing；"
+                    "taichu/pr-build：compile error in module foo "
+                    "【Taichu PRbot 自动发送，回复TD退订】 查看 https://example.test/7",
+                ),
+                snapshot=old_snapshot,
+            )
+            legacy_record = store.list_outbox()[0]
+            store.update_delivery(
+                legacy_record.id,
+                "sent",
+                "w00123",
+                "",
+                increment_attempt=True,
+            )
+            service = MonitorService(
+                client=client,
+                store=store,
+                sender=sender,
+                recipients=RecipientDirectory(direct=True),
+                clock=Clock("2026-07-10T10:08:00+08:00"),
+            )
+
+            with store:
+                report = service.poll_once()
+                tracker = store.get_tracker(7)
+                records = store.list_outbox()
+
+            self.assertEqual(0, report.new_notifications)
+            self.assertEqual([], sender.calls)
+            self.assertEqual(1, len(records))
+            self.assertEqual("sent", records[0].status)
+            self.assertIn(PROBLEM_HISTORY_MARKER, tracker.notified_failure_keys)
+            self.assertIn(APPROVAL_PROBLEM_KEY, tracker.notified_failure_keys)
+
+    def test_legacy_baselined_approval_is_not_announced_after_upgrade(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = FakeGiteaClient()
+            client.comments = [
+                {
+                    "id": 2,
+                    "body": "/ci build",
+                    "created_at": "2026-07-10T10:06:00+08:00",
+                }
+            ]
+            client.statuses = [
+                {
+                    "id": 2,
+                    "context": "protected-file-approval",
+                    "state": "failure",
+                    "description": "approval still missing",
+                    "updated_at": "2026-07-10T10:07:00+08:00",
+                }
+            ]
+            sender = SequenceSender([])
+            store = MonitorStore(pathlib.Path(temp_dir) / "state.sqlite3")
+            old_snapshot = PrSnapshot(
+                number=7,
+                title="Repair build",
+                author="w00123",
+                head_sha="abcdef123456",
+                url="https://taichu.fun/gitea/SystemAgentDev/TaiChu/pulls/7",
+                latest_ci_command="/ci build",
+                latest_ci_command_at="2026-07-10T09:55:00+08:00",
+                latest_ci_command_key="legacy-build",
+                scanned_at="2026-07-10T10:00:00+08:00",
+                failures=(
+                    GateFailure(
+                        "protected-file-approval",
+                        "2026-07-10T09:56:00+08:00",
+                        "approval missing",
+                    ),
+                ),
+            )
+            store.apply_poll(
+                7,
+                TrackerState(
+                    "legacy-build",
+                    frozenset({"legacy-build:build:failure-notified"}),
+                    True,
+                    old_snapshot.scanned_at,
+                ),
+                None,
+                snapshot=old_snapshot,
+            )
+            service = MonitorService(
+                client=client,
+                store=store,
+                sender=sender,
+                recipients=RecipientDirectory(direct=True),
+                clock=Clock("2026-07-10T10:08:00+08:00"),
+            )
+
+            with store:
+                report = service.poll_once()
+                tracker = store.get_tracker(7)
+                records = store.list_outbox()
+
+            self.assertEqual(0, report.new_notifications)
+            self.assertEqual([], sender.calls)
+            self.assertEqual([], records)
+            self.assertIn(PROBLEM_HISTORY_MARKER, tracker.notified_failure_keys)
+            self.assertIn(APPROVAL_PROBLEM_KEY, tracker.notified_failure_keys)
+
+    def test_legacy_baselined_build_failure_is_not_announced_after_upgrade(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = FakeGiteaClient()
+            client.comments = [
+                {
+                    "id": 2,
+                    "body": "/ci build",
+                    "created_at": "2026-07-10T10:06:00+08:00",
+                }
+            ]
+            client.statuses = [
+                {
+                    "id": 2,
+                    "context": "taichu/pr-build",
+                    "state": "failure",
+                    "description": "compile error in module foo",
+                    "updated_at": "2026-07-10T10:07:00+08:00",
+                }
+            ]
+            sender = SequenceSender([])
+            store = MonitorStore(pathlib.Path(temp_dir) / "state.sqlite3")
+            old_snapshot = PrSnapshot(
+                number=7,
+                title="Repair build",
+                author="w00123",
+                head_sha="abcdef123456",
+                url="https://taichu.fun/gitea/SystemAgentDev/TaiChu/pulls/7",
+                latest_ci_command="/ci build",
+                latest_ci_command_at="2026-07-10T09:55:00+08:00",
+                latest_ci_command_key="legacy-build",
+                scanned_at="2026-07-10T10:00:00+08:00",
+                failures=(
+                    GateFailure(
+                        "taichu/pr-build",
+                        "2026-07-10T09:56:00+08:00",
+                        "compile error in module foo",
+                    ),
+                ),
+            )
+            store.apply_poll(
+                7,
+                TrackerState(
+                    "legacy-build",
+                    frozenset({"legacy-build:build:failure-notified"}),
+                    True,
+                    old_snapshot.scanned_at,
+                ),
+                None,
+                snapshot=old_snapshot,
+            )
+            service = MonitorService(
+                client=client,
+                store=store,
+                sender=sender,
+                recipients=RecipientDirectory(direct=True),
+                clock=Clock("2026-07-10T10:08:00+08:00"),
+            )
+
+            with store:
+                report = service.poll_once()
+                tracker = store.get_tracker(7)
+
+            self.assertEqual(0, report.new_notifications)
+            self.assertEqual([], sender.calls)
+            self.assertTrue(
+                any(
+                    key.startswith(
+                        f"{PROBLEM_FINGERPRINT_PREFIX}taichu/pr-build:"
+                    )
+                    for key in tracker.notified_failure_keys
+                )
+            )
+
+    def test_legacy_late_unmessaged_failure_remains_eligible_next_round(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = FakeGiteaClient()
+            client.comments = [
+                {
+                    "id": 2,
+                    "body": "/ci build",
+                    "created_at": "2026-07-10T10:06:00+08:00",
+                }
+            ]
+            client.statuses = [
+                {
+                    "id": 3,
+                    "context": "taichu/pr-build",
+                    "state": "failure",
+                    "description": "unit test failed in module bar",
+                    "updated_at": "2026-07-10T10:07:00+08:00",
+                }
+            ]
+            sender = SequenceSender(["success"])
+            store = MonitorStore(pathlib.Path(temp_dir) / "state.sqlite3")
+            old_snapshot = PrSnapshot(
+                number=7,
+                title="Repair build",
+                author="w00123",
+                head_sha="abcdef123456",
+                url="https://taichu.fun/gitea/SystemAgentDev/TaiChu/pulls/7",
+                latest_ci_command="/ci build",
+                latest_ci_command_at="2026-07-10T09:55:00+08:00",
+                latest_ci_command_key="legacy-build",
+                scanned_at="2026-07-10T10:00:00+08:00",
+                failures=(
+                    GateFailure(
+                        "taichu/codex-pr-review",
+                        "2026-07-10T09:56:00+08:00",
+                        "Codex found 1 P0/P1 principle issue(s)",
+                    ),
+                    GateFailure(
+                        "taichu/pr-build",
+                        "2026-07-10T09:59:00+08:00",
+                        "unit test failed in module bar",
+                    ),
+                ),
+            )
+            store.apply_poll(
+                7,
+                TrackerState(
+                    "legacy-build",
+                    frozenset({"legacy-build:build:failure-notified"}),
+                    True,
+                    old_snapshot.scanned_at,
+                ),
+                OutboxEvent(
+                    _notification_event_key(
+                        7,
+                        "legacy-build",
+                        "/ci build:failure",
+                    ),
+                    7,
+                    "w00123",
+                    "[TaiChu PR 7] 发现问题：taichu/codex-pr-review："
+                    "Codex found 1 P0/P1 principle issue(s) "
+                    "【Taichu PRbot 自动发送，回复TD退订】 查看 https://example.test/7",
+                ),
+                snapshot=old_snapshot,
+            )
+            old_record = store.list_outbox()[0]
+            store.update_delivery(
+                old_record.id,
+                "sent",
+                "w00123",
+                "",
+                increment_attempt=True,
+            )
+            service = MonitorService(
+                client=client,
+                store=store,
+                sender=sender,
+                recipients=RecipientDirectory(direct=True),
+                clock=Clock("2026-07-10T10:08:00+08:00"),
+            )
+
+            with store:
+                report = service.poll_once()
+
+            self.assertEqual(1, report.new_notifications)
             self.assertEqual(1, len(sender.calls))
+            self.assertIn("unit test failed in module bar", sender.calls[0][1])
+
+    def test_resolved_legacy_message_is_deduped_if_it_reappears(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = FakeGiteaClient()
+            client.comments = [
+                {
+                    "id": 2,
+                    "body": "/ci build",
+                    "created_at": "2026-07-10T10:06:00+08:00",
+                }
+            ]
+            client.statuses = []
+            sender = SequenceSender([])
+            store = MonitorStore(pathlib.Path(temp_dir) / "state.sqlite3")
+            old_snapshot = PrSnapshot(
+                number=7,
+                title="Repair build",
+                author="w00123",
+                head_sha="abcdef123456",
+                url="https://taichu.fun/gitea/SystemAgentDev/TaiChu/pulls/7",
+                latest_ci_command="/ci build",
+                latest_ci_command_at="2026-07-10T09:55:00+08:00",
+                latest_ci_command_key="legacy-build",
+                scanned_at="2026-07-10T10:00:00+08:00",
+                failures=(),
+            )
+            store.apply_poll(
+                7,
+                TrackerState(
+                    "legacy-build",
+                    frozenset({"legacy-build:build:failure-notified"}),
+                    True,
+                    old_snapshot.scanned_at,
+                ),
+                OutboxEvent(
+                    _notification_event_key(
+                        7,
+                        "legacy-build",
+                        "/ci build:failure",
+                    ),
+                    7,
+                    "w00123",
+                    "[TaiChu PR #7] 发现 1 个新问题\n"
+                    "标题：Repair build\n"
+                    "- taichu/pr-build：compile error in module foo\n"
+                    "查看：https://example.test/7",
+                ),
+                snapshot=old_snapshot,
+            )
+            old_record = store.list_outbox()[0]
+            store.update_delivery(
+                old_record.id,
+                "sent",
+                "w00123",
+                "",
+                increment_attempt=True,
+            )
+            service = MonitorService(
+                client=client,
+                store=store,
+                sender=sender,
+                recipients=RecipientDirectory(direct=True),
+                clock=Clock(
+                    "2026-07-10T10:08:00+08:00",
+                    "2026-07-10T10:12:00+08:00",
+                ),
+            )
+
+            with store:
+                upgraded = service.poll_once()
+                client.comments = [
+                    {
+                        "id": 3,
+                        "body": "/ci build",
+                        "created_at": "2026-07-10T10:09:00+08:00",
+                    }
+                ]
+                client.statuses = [
+                    {
+                        "id": 3,
+                        "context": "taichu/pr-build",
+                        "state": "failure",
+                        "description": "compile error in module foo",
+                        "updated_at": "2026-07-10T10:10:00+08:00",
+                    }
+                ]
+                repeated = service.poll_once()
+
+            self.assertEqual(0, upgraded.new_notifications)
+            self.assertEqual(0, repeated.new_notifications)
+            self.assertEqual([], sender.calls)
+
+    def test_gate_summary_mention_does_not_count_as_legacy_approval_item(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = FakeGiteaClient()
+            client.comments = [
+                {
+                    "id": 2,
+                    "body": "/ci build",
+                    "created_at": "2026-07-10T10:06:00+08:00",
+                }
+            ]
+            client.statuses = [
+                {
+                    "id": 2,
+                    "context": "protected-file-approval",
+                    "state": "failure",
+                    "description": "approval missing",
+                    "updated_at": "2026-07-10T10:07:00+08:00",
+                }
+            ]
+            sender = SequenceSender(["success"])
+            store = MonitorStore(pathlib.Path(temp_dir) / "state.sqlite3")
+            old_snapshot = PrSnapshot(
+                number=7,
+                title="Repair build",
+                author="w00123",
+                head_sha="abcdef123456",
+                url="https://taichu.fun/gitea/SystemAgentDev/TaiChu/pulls/7",
+                latest_ci_command="/ci build",
+                latest_ci_command_at="2026-07-10T09:55:00+08:00",
+                latest_ci_command_key="legacy-build",
+                scanned_at="2026-07-10T10:00:00+08:00",
+                failures=(
+                    GateFailure(
+                        "taichu/pr-build",
+                        "2026-07-10T09:56:00+08:00",
+                        "protected-file-approval: diagnostic only",
+                    ),
+                ),
+            )
+            store.apply_poll(
+                7,
+                TrackerState(
+                    "legacy-build",
+                    frozenset({"legacy-build:build:failure-notified"}),
+                    True,
+                    old_snapshot.scanned_at,
+                ),
+                OutboxEvent(
+                    _notification_event_key(
+                        7,
+                        "legacy-build",
+                        "/ci build:failure",
+                    ),
+                    7,
+                    "w00123",
+                    "[TaiChu PR 7] 发现问题：taichu/pr-build："
+                    "protected-file-approval： diagnostic only "
+                    "【Taichu PRbot 自动发送，回复TD退订】 查看 https://example.test/7",
+                ),
+                snapshot=old_snapshot,
+            )
+            old_record = store.list_outbox()[0]
+            store.update_delivery(
+                old_record.id,
+                "sent",
+                "w00123",
+                "",
+                increment_attempt=True,
+            )
+            service = MonitorService(
+                client=client,
+                store=store,
+                sender=sender,
+                recipients=RecipientDirectory(direct=True),
+                clock=Clock("2026-07-10T10:08:00+08:00"),
+            )
+
+            with store:
+                report = service.poll_once()
+
+            self.assertEqual(1, report.new_notifications)
+            self.assertEqual(1, len(sender.calls))
+            self.assertIn("protected-file-approval：approval missing", sender.calls[0][1])
 
     def test_new_build_success_comments_merge_once_without_welink_or_restart_retry(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1834,11 +2461,29 @@ class MonitorServiceTest(unittest.TestCase):
                 ]
 
                 failed = service.poll_once()
+                client.comments = [
+                    {
+                        "id": 2,
+                        "body": "/ci build",
+                        "created_at": "2026-07-10T10:09:00+08:00",
+                    }
+                ]
+                client.statuses = [
+                    {
+                        "id": 3,
+                        "context": "taichu/pr-build",
+                        "state": "failure",
+                        "description": "new failure",
+                        "updated_at": "2026-07-10T10:10:00+08:00",
+                    }
+                ]
                 retried = service.poll_once()
 
                 self.assertEqual(1, failed.delivery_failures)
+                self.assertEqual(0, retried.new_notifications)
                 self.assertEqual(1, retried.delivered)
                 self.assertEqual(2, len(sender.calls))
+                self.assertEqual(1, len(store.list_outbox()))
                 self.assertEqual("sent", store.list_outbox()[0].status)
 
     def test_merge_success_retry_reuses_the_persisted_message_and_metrics(self):

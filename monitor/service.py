@@ -9,17 +9,25 @@ import json
 import logging
 import math
 import pathlib
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, Iterable, List, Optional
 
 from .core import (
+    GateFailure,
+    GATE_CONTEXTS,
+    PROBLEM_HISTORY_MARKER,
     PrSnapshot,
+    TrackerState,
     build_pr_snapshot,
     exact_ci_command,
     notification_summary,
     notification_text,
     poll_tracker,
+    round_failure_key,
+    seed_problem_history,
+    stage_failures,
 )
 from .gitea import DEFAULT_OWNER, DEFAULT_REPO, DEFAULT_WEB_BASE
 from .state import MonitorStore, OutboxEvent
@@ -368,6 +376,7 @@ class MonitorService:
         ):
             missing_recipient_authors.add(snapshot.author)
         current = self.store.get_tracker(snapshot.number)
+        current = self._migrate_problem_history(snapshot, current)
         result = poll_tracker(current, snapshot)
         event = self._event_for(
             snapshot,
@@ -389,6 +398,50 @@ class MonitorService:
             result.merge_success
         )
         return result
+
+    def _migrate_problem_history(
+        self,
+        snapshot: PrSnapshot,
+        state: TrackerState,
+    ) -> TrackerState:
+        if PROBLEM_HISTORY_MARKER in state.notified_failure_keys:
+            return state
+        records = self.store.list_outbox_for_pr(snapshot.number)
+        messages = [record.message for record in records]
+        previous_snapshot = self.store.get_snapshot(snapshot.number)
+        baselined_failures = ()
+        if previous_snapshot and state.observed_command_key:
+            previous_round = dataclasses.replace(
+                previous_snapshot,
+                latest_ci_command_key=state.observed_command_key,
+            )
+            previous_failure_key = round_failure_key(previous_round)
+            previous_event_key = _notification_event_key(
+                snapshot.number,
+                state.observed_command_key,
+                f"{previous_snapshot.latest_ci_command}:failure",
+            )
+            if (
+                previous_failure_key in state.notified_failure_keys
+                and not any(
+                    record.event_key == previous_event_key for record in records
+                )
+            ):
+                # Old baselines consumed a round without creating an outbox item.
+                baselined_failures = stage_failures(previous_snapshot)
+        historical_failures = tuple(_messaged_failures(messages))
+        approval_notified = any(
+            failure.context == "protected-file-approval"
+            for failure in baselined_failures
+        ) or any(
+            failure.context == "protected-file-approval"
+            for failure in historical_failures
+        )
+        return seed_problem_history(
+            state,
+            (*baselined_failures, *historical_failures),
+            approval_notified=approval_notified,
+        )
 
     def _check_disappeared_pulls(
         self,
@@ -469,15 +522,11 @@ class MonitorService:
         if not failures and not merge_success:
             return None
         kind = "merge-success" if merge_success else f"{snapshot.latest_ci_command}:failure"
-        digest = hashlib.sha256(
-            (
-                str(snapshot.number)
-                + "\0"
-                + snapshot.latest_ci_command_key
-                + "\0"
-                + kind
-            ).encode("utf-8")
-        ).hexdigest()
+        digest = _notification_event_key(
+            snapshot.number,
+            snapshot.latest_ci_command_key,
+            kind,
+        )
         merge_metrics = (
             self._load_merge_metrics(snapshot, merge_pull) if merge_success else None
         )
@@ -965,6 +1014,42 @@ def _is_merge_success_message(message: str) -> bool:
 def _is_failure_message(message: str) -> bool:
     text = str(message or "")
     return "[TaiChu PR " in text and "发现问题：" in text
+
+
+def _notification_event_key(
+    pr_number: int,
+    command_key: str,
+    kind: str,
+) -> str:
+    return hashlib.sha256(
+        f"{pr_number}\0{command_key}\0{kind}".encode("utf-8")
+    ).hexdigest()
+
+
+def _messaged_failures(messages: Iterable[str]) -> Iterable[GateFailure]:
+    contexts = "|".join(re.escape(context) for context in GATE_CONTEXTS)
+    end = (
+        rf"(?=[；;]\s*(?:{contexts})[：:]|"
+        rf"\n\s*-\s*(?:{contexts})[：:]|"
+        rf"[；;]?\s*【Taichu|"
+        rf"[；;]?\s*查看\s+(?:https?://|\[https?://)|"
+        rf"\n\s*下一步[：:]|"
+        rf"\n\s*查看[：:]\s*(?:https?://|\[https?://)|$)"
+    )
+    for message in messages:
+        text = str(message or "")
+        for context in GATE_CONTEXTS:
+            match = re.search(
+                rf"(?:发现问题：|[；;]|\n\s*-\s*)\s*"
+                rf"{re.escape(context)}[：:]\s*(.*?){end}",
+                text,
+                flags=re.DOTALL,
+            )
+            if match is None:
+                continue
+            summary = match.group(1).strip(" \t\r\n；;")
+            if summary:
+                yield GateFailure(context, "", summary)
 
 
 def _latest_ci_command(comments) -> str:
