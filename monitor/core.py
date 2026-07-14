@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime as dt
+import hashlib
 import html
 import re
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
@@ -43,6 +44,10 @@ MERGE_GATE_CONTEXTS = (
 RELEASE_MERGE_GATE_CONTEXTS = ("ci/merge-gate",)
 
 TRUSTED_GATE_COMMENT_AUTHORS = frozenset({"taichu-ci-bot"})
+
+PROBLEM_FINGERPRINT_PREFIX = "problem-fingerprint:v1:"
+PROBLEM_HISTORY_MARKER = f"{PROBLEM_FINGERPRINT_PREFIX}history-checked"
+APPROVAL_PROBLEM_KEY = f"{PROBLEM_FINGERPRINT_PREFIX}protected-file-approval"
 
 # Validated surname readings cover current TaiChu authors plus common surnames.
 # Unknown or ambiguous data fails closed and can be handled by a recipient override.
@@ -316,24 +321,39 @@ def poll_tracker(state: TrackerState, snapshot: PrSnapshot) -> TrackerResult:
     if not state.initialized:
         return TrackerResult(_initialize_baseline(state, snapshot), ())
 
+    persistent_problem_keys = _persistent_problem_keys(state.notified_failure_keys)
     notified = (
         set(state.notified_failure_keys)
         if snapshot.latest_ci_command_key == state.observed_command_key
-        else set()
+        else set(persistent_problem_keys)
     )
     new_command_round = snapshot.latest_ci_command_key != state.observed_command_key
     terminal_merge = snapshot.latest_ci_command == "/ci merge" and snapshot.merged
     failures = () if terminal_merge else tuple(_stage_failures_after_command(snapshot))
+    problem_keys = {
+        failure: _problem_fingerprint_key(failure) for failure in failures
+    }
+    unseen_failures = tuple(
+        failure for failure in failures if problem_keys[failure] not in notified
+    )
     notifications: Tuple[GateFailure, ...] = ()
     failure_round_key = round_failure_key(snapshot)
-    if failures and failure_round_key not in notified:
+    if failures and failure_round_key not in notified and unseen_failures:
         command_started_after_scan = new_command_round
         if command_started_after_scan or any(
             _happened_at_or_after_scan(failure.updated_at, state.last_scanned_at)
-            for failure in failures
+            for failure in unseen_failures
         ):
-            notifications = failures
-        notified.add(failure_round_key)
+            notifications = unseen_failures
+            notified.add(failure_round_key)
+        notified.update(problem_keys.values())
+    elif (
+        failures
+        and failure_round_key in notified
+        and not persistent_problem_keys
+    ):
+        # Upgrade old per-round state without replaying its visible failures.
+        notified.update(problem_keys.values())
 
     request_merge_comment = False
     merge_success = False
@@ -379,6 +399,43 @@ def round_failure_key(snapshot: PrSnapshot) -> str:
     if not stage or not snapshot.latest_ci_command_key:
         return ""
     return f"{snapshot.latest_ci_command_key}:{stage}:failure-notified"
+
+
+def _problem_fingerprint_key(failure: GateFailure) -> str:
+    context = (
+        normalize_gate_context(failure.context)
+        or failure.context.strip().casefold()
+    )
+    if context == "protected-file-approval":
+        return APPROVAL_PROBLEM_KEY
+    # Deduplicate the actionable text sent to WeLink, not hidden log noise.
+    summary = notification_summary(context, failure.summary)
+    digest = hashlib.sha256(f"{context}\0{summary}".encode("utf-8")).hexdigest()
+    return f"{PROBLEM_FINGERPRINT_PREFIX}{context}:{digest}"
+
+
+def _persistent_problem_keys(keys: Iterable[str]) -> frozenset:
+    return frozenset(
+        key for key in keys if str(key).startswith(PROBLEM_FINGERPRINT_PREFIX)
+    )
+
+
+def seed_problem_history(
+    state: TrackerState,
+    failures: Iterable[GateFailure] = (),
+    *,
+    approval_notified: bool = False,
+) -> TrackerState:
+    keys = set(state.notified_failure_keys)
+    keys.add(PROBLEM_HISTORY_MARKER)
+    keys.update(_problem_fingerprint_key(failure) for failure in failures)
+    if approval_notified:
+        keys.add(APPROVAL_PROBLEM_KEY)
+    return dataclasses.replace(state, notified_failure_keys=frozenset(keys))
+
+
+def stage_failures(snapshot: PrSnapshot) -> Tuple[GateFailure, ...]:
+    return tuple(_stage_failures_after_command(snapshot))
 
 
 def stage_success_key(snapshot: PrSnapshot) -> str:
@@ -833,13 +890,13 @@ def exact_ci_command(value: Any) -> str:
 
 
 def _initialize_baseline(state: TrackerState, snapshot: PrSnapshot) -> TrackerState:
-    notified = (
-        set(state.notified_failure_keys)
-        if snapshot.latest_ci_command_key == state.observed_command_key
-        else set()
-    )
-    if any(_stage_failures_after_command(snapshot)):
+    notified = set(state.notified_failure_keys)
+    if snapshot.latest_ci_command_key != state.observed_command_key:
+        notified = set(_persistent_problem_keys(notified))
+    failures = tuple(_stage_failures_after_command(snapshot))
+    if failures:
         notified.add(round_failure_key(snapshot))
+        notified.update(_problem_fingerprint_key(failure) for failure in failures)
     success_key = stage_success_key(snapshot)
     if success_key:
         notified.add(success_key)
