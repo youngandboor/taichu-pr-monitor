@@ -17,7 +17,7 @@
 - `protected-file-approval` 对同一个 PR 最多通知一次；其他门禁按“门禁 + 提炼后的失败摘要”跨 CI 轮次去重。相同根因重跑不再私聊，摘要确实变化时仍可在后续轮次通知。
 - 降噪只影响 WeLink；工作台始终展示 PR 当前的完整失败状态，不会隐藏已通知或被抑制的问题。
 - 失败摘要按门禁提炼：Approval 取“结果”，Codex 取 P0/P1 数量或特殊阻塞原因，PR Build/Merge Gate 取结构化失败任务，Preflight 只取 FAIL 用例行；Jenkins 链接、产物和长日志不会进入私聊。
-- Build 三门禁全部成功后不发成功消息，而是在 PR 中自动评论一次 `/ci merge`；提交前会重新读取最新评论中的最新 CI 命令，若已经是 `/ci merge` 就跳过；读取或评论失败只记录 warning，不重试、不额外通知；`--dry-run` 不会发送 WeLink，也不会写入 Gitea 评论。
+- Build 门禁全部成功后保持静默：不发成功私聊，也不自动评论 `/ci merge`。是否进入 Merge 阶段由提交人确认后手工评论 `/ci merge`；`--dry-run` 只打印原本会发送的 WeLink 消息。
 - 每个 `/ci merge` 轮次同样最多发送一条只含新问题的失败消息；Merge Gate 成功但 PR 仍开放时不发祝贺，只有 Gitea 最终确认 `state=closed`、`merged=true` 且存在 `merged_at` 后才发送成功消息。
 - 成功文案以 `additions + deletions` 的 Diff 变更量和 `merged_at - created_at` 选择档位。实际变更行数以不带千分位的纯数字自然嵌入正文，持续时间只参与选档、不单独展示；行数字段无法解析时仍发送通用成功消息。
 - 确认实际合入时会封存尚未发出的旧失败和重复成功，工作台不能再重试这些过期记录。

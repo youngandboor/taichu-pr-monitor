@@ -1198,7 +1198,7 @@ class MonitorServiceTest(unittest.TestCase):
             self.assertEqual(1, len(sender.calls))
             self.assertIn("protected-file-approval：approval missing", sender.calls[0][1])
 
-    def test_new_build_success_comments_merge_once_without_welink_or_restart_retry(self):
+    def test_new_build_success_stays_silent_across_restart(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             client = FakeGiteaClient()
             sender = SequenceSender([])
@@ -1250,10 +1250,7 @@ class MonitorServiceTest(unittest.TestCase):
                 self.assertEqual(0, succeeded.new_notifications)
                 self.assertEqual([], sender.calls)
                 self.assertEqual([], store.list_outbox())
-                self.assertEqual(
-                    [("SystemAgentDev", "TaiChu", 7, "/ci merge")],
-                    client.comment_attempts,
-                )
+                self.assertEqual([], client.comment_attempts)
 
             restarted, reopened = self.make_service(
                 temp_dir,
@@ -1265,9 +1262,9 @@ class MonitorServiceTest(unittest.TestCase):
                 repeated = restarted.poll_once()
 
             self.assertEqual(0, repeated.new_notifications)
-            self.assertEqual(1, len(client.comment_attempts))
+            self.assertEqual([], client.comment_attempts)
 
-    def test_release_build_success_comments_merge_without_codex_gate(self):
+    def test_release_build_success_also_stays_silent(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             client = FakeGiteaClient()
             client.base_ref = "Br_develop_cloud_release"
@@ -1310,13 +1307,10 @@ class MonitorServiceTest(unittest.TestCase):
                 report = service.poll_once()
 
             self.assertEqual([], report.errors)
-            self.assertEqual(
-                [("SystemAgentDev", "TaiChu", 7, "/ci merge")],
-                client.comment_attempts,
-            )
+            self.assertEqual([], client.comment_attempts)
             self.assertEqual([], sender.calls)
 
-    def test_build_success_does_not_duplicate_a_human_merge_comment(self):
+    def test_build_success_stays_silent_when_human_already_requested_merge(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             client = FakeGiteaClient()
             sender = SequenceSender([])
@@ -1373,34 +1367,6 @@ class MonitorServiceTest(unittest.TestCase):
             self.assertEqual([], client.comment_attempts)
             self.assertEqual([], sender.calls)
 
-    def test_disabled_outbound_comments_do_not_post_ci_merge(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            client = FakeGiteaClient()
-            sender = SequenceSender([])
-            service, store = self.make_service(
-                temp_dir,
-                client,
-                sender,
-                Clock("2026-07-10T10:05:00+08:00"),
-            )
-            service.allow_merge_comments = False
-            snapshot = PrSnapshot(
-                number=7,
-                title="Repair build",
-                author="w00123",
-                head_sha="abcdef123456",
-                url="https://taichu.fun/gitea/SystemAgentDev/TaiChu/pulls/7",
-                latest_ci_command="/ci build",
-                latest_ci_command_at="2026-07-10T10:00:00+08:00",
-                latest_ci_command_key="build-1",
-                scanned_at="2026-07-10T10:05:00+08:00",
-                failures=(),
-            )
-            with store:
-                service._try_comment_merge(snapshot)
-
-            self.assertEqual([], client.comment_attempts)
-
     def test_build_success_ignores_old_merge_and_explanatory_text(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             client = FakeGiteaClient()
@@ -1455,12 +1421,9 @@ class MonitorServiceTest(unittest.TestCase):
 
                 service.poll_once()
 
-            self.assertEqual(
-                [("SystemAgentDev", "TaiChu", 7, "/ci merge")],
-                client.comment_attempts,
-            )
+            self.assertEqual([], client.comment_attempts)
 
-    def test_build_success_skips_comment_when_latest_comment_check_fails(self):
+    def test_build_success_does_not_perform_a_second_comment_read(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             client = FakeGiteaClient()
             sender = SequenceSender([])
@@ -1514,8 +1477,9 @@ class MonitorServiceTest(unittest.TestCase):
 
             self.assertEqual([], client.comment_attempts)
             self.assertEqual([], sender.calls)
+            self.assertEqual(1, reads)
 
-    def test_failed_merge_comment_is_only_warned_and_never_retried(self):
+    def test_build_success_never_attempts_a_gitea_write(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             client = FakeGiteaClient()
             client.comment_error = RuntimeError("comments forbidden")
@@ -1562,7 +1526,7 @@ class MonitorServiceTest(unittest.TestCase):
 
             self.assertEqual([], first.errors)
             self.assertEqual([], repeated.errors)
-            self.assertEqual(1, len(client.comment_attempts))
+            self.assertEqual([], client.comment_attempts)
             self.assertEqual([], sender.calls)
 
     def test_merge_failure_then_success_sends_each_single_line_message_once(self):

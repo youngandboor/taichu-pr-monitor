@@ -26,11 +26,6 @@ BUILD_GATE_CONTEXTS = (
     "taichu/pr-build",
 )
 
-BUILD_PRECONDITION_CONTEXTS = (
-    "protected-file-approval",
-    "taichu/codex-pr-review",
-)
-
 RELEASE_BUILD_GATE_CONTEXTS = (
     "protected-file-approval",
     "taichu/pr-build",
@@ -129,7 +124,6 @@ class TrackerState:
 class TrackerResult:
     state: TrackerState
     notifications: Tuple[GateFailure, ...]
-    request_merge_comment: bool = False
     merge_success: bool = False
 
 
@@ -355,18 +349,10 @@ def poll_tracker(state: TrackerState, snapshot: PrSnapshot) -> TrackerResult:
         # Upgrade old per-round state without replaying its visible failures.
         notified.update(problem_keys.values())
 
-    request_merge_comment = False
     merge_success = False
-    completion_key = stage_success_key(snapshot)
+    completion_key = merge_success_key(snapshot)
     if completion_key and completion_key not in notified:
-        completed_at = _stage_completed_at(snapshot)
-        if snapshot.latest_ci_command == "/ci merge" and snapshot.merged:
-            merge_success = True
-        elif new_command_round or _happened_at_or_after_scan(
-            completed_at,
-            state.last_scanned_at,
-        ):
-            request_merge_comment = snapshot.latest_ci_command == "/ci build"
+        merge_success = True
         notified.add(completion_key)
 
     next_state = TrackerState(
@@ -378,7 +364,6 @@ def poll_tracker(state: TrackerState, snapshot: PrSnapshot) -> TrackerResult:
     return TrackerResult(
         next_state,
         notifications,
-        request_merge_comment=request_merge_comment,
         merge_success=merge_success,
     )
 
@@ -438,24 +423,10 @@ def stage_failures(snapshot: PrSnapshot) -> Tuple[GateFailure, ...]:
     return tuple(_stage_failures_after_command(snapshot))
 
 
-def stage_success_key(snapshot: PrSnapshot) -> str:
-    stage = _command_stage(snapshot.latest_ci_command)
-    if not stage:
+def merge_success_key(snapshot: PrSnapshot) -> str:
+    if snapshot.latest_ci_command != "/ci merge" or not snapshot.merged:
         return ""
-    if stage == "merge":
-        if not snapshot.merged:
-            return ""
-    elif not _stage_succeeded_after_command(snapshot):
-        return ""
-    action = "merge-comment-attempted" if stage == "build" else "success-notified"
-    return f"{snapshot.latest_ci_command_key}:{stage}:{action}"
-
-
-def build_success_key(snapshot: PrSnapshot) -> str:
-    """Compatibility alias for the persisted build-completion round flag."""
-    if snapshot.latest_ci_command != "/ci build":
-        return ""
-    return stage_success_key(snapshot)
+    return f"{snapshot.latest_ci_command_key}:merge:success-notified"
 
 
 def notification_text(value: str) -> str:
@@ -897,7 +868,7 @@ def _initialize_baseline(state: TrackerState, snapshot: PrSnapshot) -> TrackerSt
     if failures:
         notified.add(round_failure_key(snapshot))
         notified.update(_problem_fingerprint_key(failure) for failure in failures)
-    success_key = stage_success_key(snapshot)
+    success_key = merge_success_key(snapshot)
     if success_key:
         notified.add(success_key)
     return TrackerState(
@@ -919,55 +890,6 @@ def _stage_failures_after_command(snapshot: PrSnapshot) -> Iterable[GateFailure]
             )
         ):
             yield failure
-
-
-def _stage_succeeded_after_command(snapshot: PrSnapshot) -> bool:
-    contexts = _stage_contexts(snapshot)
-    if (
-        not contexts
-        or not snapshot.latest_ci_command_key
-        or not snapshot.latest_ci_command_at
-    ):
-        return False
-    results = {result.context: result for result in snapshot.gate_results}
-    return all(
-        context in results
-        and results[context].state == "success"
-        and _gate_result_belongs_to_round(
-            snapshot.latest_ci_command,
-            context,
-            results[context].updated_at,
-            snapshot.latest_ci_command_at,
-        )
-        for context in contexts
-    )
-
-
-def _stage_completed_at(snapshot: PrSnapshot) -> str:
-    if snapshot.latest_ci_command == "/ci merge" and snapshot.merged:
-        return snapshot.merged_at or snapshot.scanned_at
-    contexts = _stage_contexts(snapshot)
-    candidates = [
-        result.updated_at
-        for result in snapshot.gate_results
-        if result.context in contexts and result.updated_at
-    ]
-    return max(candidates, key=_time_key) if candidates else ""
-
-
-def _gate_result_belongs_to_round(
-    command: str,
-    context: str,
-    result_at: str,
-    command_at: str,
-) -> bool:
-    if command == "/ci build" and context in BUILD_PRECONDITION_CONTEXTS:
-        return True
-    return bool(
-        result_at
-        and command_at
-        and _time_key(result_at) >= _time_key(command_at)
-    )
 
 
 def _failure_belongs_to_round(result_at: str, command_at: str) -> bool:

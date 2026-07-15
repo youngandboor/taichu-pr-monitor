@@ -21,7 +21,6 @@ from .core import (
     PrSnapshot,
     TrackerState,
     build_pr_snapshot,
-    exact_ci_command,
     notification_summary,
     notification_text,
     poll_tracker,
@@ -237,7 +236,6 @@ class MonitorService:
         max_comment_pages: int = 3,
         max_send_attempts: int = 3,
         fetch_workers: int = 6,
-        allow_merge_comments: bool = True,
         clock: Optional[Callable[[], str]] = None,
         logger: Optional[logging.Logger] = None,
     ) -> None:
@@ -252,7 +250,6 @@ class MonitorService:
         self.max_comment_pages = max_comment_pages
         self.max_send_attempts = max_send_attempts
         self.fetch_workers = max(1, fetch_workers)
-        self.allow_merge_comments = allow_merge_comments
         self.clock = clock or _utc_now
         self.logger = logger or logging.getLogger(__name__)
         self._previous_snapshots = None
@@ -390,8 +387,6 @@ class MonitorService:
             event,
             snapshot=snapshot,
         )
-        if result.request_merge_comment and not snapshot.merged:
-            self._try_comment_merge(snapshot)
         if count_as_open_scan:
             report.scanned_prs += 1
         report.new_notifications += int(bool(result.notifications)) + int(
@@ -564,52 +559,6 @@ class MonitorService:
                 error,
             )
             return None
-
-    def _try_comment_merge(self, snapshot: PrSnapshot) -> None:
-        if not self.allow_merge_comments:
-            self.logger.info(
-                "skipping automatic /ci merge on PR #%s because outbound "
-                "comments are disabled",
-                snapshot.number,
-            )
-            return
-        try:
-            comments = self.client.get_issue_comments(
-                self.owner,
-                self.repo,
-                snapshot.number,
-                max_pages=self.max_comment_pages,
-            )
-        except Exception as error:
-            self.logger.warning(
-                "could not verify the latest comment on PR #%s; "
-                "skipping automatic /ci merge: %s",
-                snapshot.number,
-                error,
-            )
-            return
-
-        if _latest_ci_command(comments) == "/ci merge":
-            self.logger.info(
-                "skipping automatic /ci merge on PR #%s because the latest "
-                "CI command is already /ci merge",
-                snapshot.number,
-            )
-            return
-
-        try:
-            self.client.create_issue_comment(
-                self.owner,
-                self.repo,
-                snapshot.number,
-                "/ci merge",
-            )
-        except Exception as error:
-            self.logger.warning(
-                "could not comment /ci merge on PR #%s; this round will not retry: %s",
-                snapshot.number,
-                error,
-            )
 
     def _dispatch_outbox(self, report: PollReport) -> None:
         records = self.store.list_dispatchable(self.max_send_attempts)
@@ -1050,40 +999,6 @@ def _messaged_failures(messages: Iterable[str]) -> Iterable[GateFailure]:
             summary = match.group(1).strip(" \t\r\n；;")
             if summary:
                 yield GateFailure(context, "", summary)
-
-
-def _latest_ci_command(comments) -> str:
-    latest_command = ""
-    latest_key = ((0, 0.0, ""), -1, -1)
-    for index, comment in enumerate(comments):
-        if not isinstance(comment, dict):
-            continue
-        command = exact_ci_command(comment.get("body"))
-        if not command:
-            continue
-        try:
-            comment_id = int(comment.get("id") or -1)
-        except (TypeError, ValueError):
-            comment_id = -1
-        key = (_comment_created_key(comment.get("created_at")), comment_id, index)
-        if key >= latest_key:
-            latest_command = command
-            latest_key = key
-    return latest_command
-
-
-def _comment_created_key(value):
-    raw = str(value or "").strip()
-    if not raw:
-        return (0, 0.0, "")
-    normalized = raw[:-1] + "+00:00" if raw.endswith("Z") else raw
-    try:
-        parsed = dt.datetime.fromisoformat(normalized)
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=dt.timezone.utc)
-        return (1, parsed.timestamp(), raw)
-    except ValueError:
-        return (0, 0.0, raw)
 
 
 def _utc_now() -> str:
