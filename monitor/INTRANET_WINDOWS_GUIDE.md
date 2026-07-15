@@ -10,7 +10,7 @@
 - 把五个关键门禁分成 Build 三项和 Merge 两项；
 - 第一次运行只建立基线，不补发历史问题；
 - 每轮 Build 或 Merge 失败最多私聊一次；
-- Build 三门禁成功后自动评论 `/ci merge`，不发成功私聊；
+- Build 门禁成功后保持静默，由提交人确认后手工评论 `/ci merge`；
 - Merge 成功后按 PR Diff 变更量与持续时间选择祝贺消息，并向提交人发送一次；
 - 从 Gitea `full_name` 自动生成“姓氏拼音首字母 + 8 位工号”的 WeLink W3 账号；
 - 浏览器可在 `http://127.0.0.1:8790` 查看完整发送记录、磁盘占用并动态设置免打扰工号。
@@ -22,7 +22,7 @@
 1. 能打开 `https://taichu.fun/gitea/SystemAgentDev/TaiChu/pulls`；
 2. 能取得本仓库代码；推荐直接访问 GitHub，也可以使用公司允许的文件摆渡方式；
 3. 已安装并登录 WeLink，且内部文档要求的 `welink-cli` 已配置完成；
-4. 有一个能读取 `SystemAgentDev/TaiChu`、并能在 PR 下发表评论的 Gitea Personal Access Token（PAT）。
+4. 有一个能读取 `SystemAgentDev/TaiChu` 仓库、PR、状态和评论的 Gitea Personal Access Token（PAT）。
 5. 有一位知情同事可接收 WeLink 冒烟消息；`welink-cli` 登录账号不能给自己发消息。
 
 不要把 PAT、真实 W3 账号、`recipients.json` 或本地 SQLite 文件发到 GitHub。
@@ -138,7 +138,7 @@ Command discovery passed.
 
 ## 第 5 步：把 Gitea PAT 放进当前窗口
 
-在 Gitea 的“设置 -> 应用 -> 管理访问令牌”创建 PAT。令牌既要能够读取 `SystemAgentDev/TaiChu`，也要能够在 PR/Issue 下发表评论；如果页面提供权限范围，请同时选择仓库读取和 Issue/评论写入权限。
+在 Gitea 的“设置 -> 应用 -> 管理访问令牌”创建 PAT。令牌只需要读取 `SystemAgentDev/TaiChu` 的仓库、PR、状态和评论；监控不会向 Gitea 写入评论。
 
 回到 PowerShell，执行：
 
@@ -211,7 +211,7 @@ $env:TAICHU_WELINK_SELF_FALLBACK = "y备用接收账号"
 py -3 -m monitor --once --strict-recipients
 ```
 
-这是正式状态库的第一次扫描。它会记录当前已有问题和已经完成的命令轮次作为基线，不会群发历史结果，也不会为历史 Build 自动评论 `/ci merge`。
+这是正式状态库的第一次扫描。它会记录当前已有问题和已经完成的命令轮次作为基线，不会群发历史结果。
 
 默认状态库位于：
 
@@ -269,12 +269,12 @@ py -3 -m monitor --strict-recipients --dashboard-host 0.0.0.0 --allow-remote-das
 4. 等待一个轮询周期加扫描时间，通常不超过 4 分钟；
 5. 确认对应提交人或备用接收人收到单行 WeLink 消息，PR URL 位于消息最后且可正确点击；
 6. 让同一 Build 轮次出现第二个失败，确认不会再发第二条；
-7. 再触发一个新的 `/ci build` 并让三个 Build 门禁全部成功，确认 PR 中自动出现一次 `/ci merge`，且没有 Build 成功私聊；若提交人已先在最新评论中发出 `/ci merge`，确认机器人识别到最新 CI 命令并且不重复评论；
-8. 让 Merge 门禁失败，确认提交人收到一次失败消息；
+7. 再触发一个新的 `/ci build` 并让三个 Build 门禁全部成功，确认没有 Build 成功私聊，PR 中也不会自动出现 `/ci merge`；
+8. 由提交人手工评论 `/ci merge`，再让 Merge 门禁失败，确认提交人收到一次失败消息；
 9. 重新触发 `/ci merge` 并让两个 Merge 门禁成功，确认提交人收到一次“恭喜，Merge 已成功”；
 10. 在工作台“消息发送”中分别查看已发送、需人工处理和完整消息详情。
 
-只有基线之后产生的新阶段结果才会触发动作。旧 head、旧命令轮次和历史评论不会补发。自动评论 `/ci merge` 失败时程序只写 warning，不重试也不通知。
+只有基线之后产生的新阶段结果才会触发通知。旧 head、旧命令轮次和历史评论不会补发。Build 成功后监控保持静默，不会代替提交人进入 Merge 阶段。
 
 消息中的“回复 TD 退订”目前是人工流程。`welink-cli` 不能读取回复；维护者在 WeLink 看到 TD 后，需要打开工作台“免打扰”，输入对方 8 位工号或完整 W3。加入后待发消息会标为“已跳过”，移出名单只恢复未来消息，不补发历史消息。
 
@@ -323,7 +323,7 @@ py -3 -m monitor --strict-recipients --open-dashboard
 | `py` 无法识别 | 安装 Python 3，确认安装器勾选 PATH，然后重新打开 PowerShell |
 | `welink-cli` 无法识别 | 按内部文档安装和登录 CLI，再运行第 4 步 |
 | `401 Unauthorized` | PAT 无效、过期或权限不足；重新创建 PAT，再执行第 5 步 |
-| `403 Forbidden` | 当前账号无权读取仓库、无权在 PR 下评论，或 PAT 权限不足 |
+| `403 Forbidden` | 当前账号无权读取仓库、PR、状态或评论，或 PAT 权限不足 |
 | `failed to list open pull requests`、`urlopen error timed out` | 先执行下方 Gitea API 连通性检查；更新到最新 `main` 后可增大超时并重试 |
 | `errors` 不为 `0` | 在工作台查看扫描错误；先检查 Gitea、内网和 PAT |
 | 端口 `8790` 被占用 | 用 `py -3 -m monitor --dashboard-port 8791 --open-dashboard` |
@@ -333,7 +333,7 @@ py -3 -m monitor --strict-recipients --open-dashboard
 | 给自己发送失败 | WeLink 不支持自发消息；配置发送账号和备用接收人，或改用不提交 PR 的专用发送账号 |
 | 发给了错误的人 | 立即按 `Ctrl+C` 停止，核对 Gitea 登录号和 W3 账号，必要时使用映射表 |
 | 新失败没有通知 | 确认它发生在首次基线之后、属于当前命令阶段，并检查工作台 outbox 与免打扰名单 |
-| Build 成功后没有 `/ci merge` 评论 | 三项 Build 门禁都必须是当前 head 的成功结果，且 `taichu/pr-build` 不早于最新 `/ci build`；PAT 没有评论权限时按设计只记录 warning，不重试 |
+| Build 成功后没有消息或 `/ci merge` 评论 | 这是当前设计；监控保持静默，由提交人确认后手工评论 `/ci merge` |
 | Merge 成功没有祝贺消息 | 两个 Merge 门禁必须全部成功且时间不早于最新 `/ci merge`，同时检查收件人工号是否在免打扰名单 |
 | 工作台显示磁盘空间偏低 | 查看“本地存储”的数据库占用和磁盘剩余；先清理其他无关大文件，不要直接删除 `monitor.sqlite3` |
 | `git pull` 提示本地修改冲突 | 不要执行 `git reset --hard`；保留现场并联系维护者 |
@@ -399,7 +399,7 @@ py -3 -m monitor --list-outbox > "$HOME\Desktop\taichu-monitor-outbox.json"
 - [ ] 正式基线已完成；
 - [ ] 工作台能打开并持续刷新；
 - [ ] Build 同一轮多个失败最多通知一次；
-- [ ] Build 三门禁成功后自动评论一次 `/ci merge`，不发 Build 成功私聊；
+- [ ] Build 门禁成功后不发成功私聊，也不自动评论 `/ci merge`；
 - [ ] Merge 失败通知一次，成功发送一次祝贺消息；
 - [ ] 工作台能查看已发送消息和完整错误；
 - [ ] 按 WeLink 工号加入免打扰后，新消息显示为“已跳过”；

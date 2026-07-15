@@ -85,21 +85,6 @@ class GiteaClient:
             recent=True,
         )
 
-    def create_issue_comment(
-        self,
-        owner: str,
-        repo: str,
-        number: int,
-        body: str,
-    ) -> Dict[str, Any]:
-        payload = self.api_post_once(
-            f"/repos/{owner}/{repo}/issues/{number}/comments",
-            {"body": body},
-        )
-        if not isinstance(payload, dict):
-            raise GiteaApiError("Gitea API returned an invalid issue comment response")
-        return payload
-
     def get_statuses(self, owner: str, repo: str, sha: str) -> List[Dict[str, Any]]:
         try:
             statuses = self.api_get_pages(
@@ -195,27 +180,6 @@ class GiteaClient:
         except json.JSONDecodeError as error:
             raise GiteaApiError(f"Gitea API returned invalid JSON for {path}") from error
         return ApiResponse(payload, headers)
-
-    def api_post_once(self, path: str, payload: Mapping[str, Any]) -> Any:
-        """Send a non-idempotent request exactly once."""
-        request = urllib.request.Request(
-            self.api_base + path,
-            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers={**self._headers(), "Content-Type": "application/json"},
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
-                data = response.read()
-        except urllib.error.HTTPError as error:
-            body = error.read().decode("utf-8", errors="replace")[:500]
-            raise GiteaApiError(f"Gitea API {error.code} for {path}: {body}") from error
-        except (urllib.error.URLError, TimeoutError) as error:
-            raise GiteaApiError(f"Gitea API request failed for {path}: {error}") from error
-        try:
-            return json.loads(data.decode("utf-8"))
-        except json.JSONDecodeError as error:
-            raise GiteaApiError(f"Gitea API returned invalid JSON for {path}") from error
 
     def _headers(self) -> Dict[str, str]:
         headers = {
