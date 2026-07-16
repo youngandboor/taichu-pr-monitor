@@ -220,6 +220,29 @@ class MonitorServiceTest(unittest.TestCase):
             failures,
         )
 
+    def test_existing_messages_can_seed_codex_test_review_history(self):
+        failures = tuple(
+            _messaged_failures(
+                [
+                    "[TaiChu PR 7] 发现问题：taichu/codex-pr-test-review："
+                    "发现 1 个 P0/P1 测试审查问题 "
+                    "【Taichu PRbot 自动发送，回复TD退订】 "
+                    "查看 https://example.test/7"
+                ]
+            )
+        )
+
+        self.assertEqual(
+            (
+                GateFailure(
+                    "taichu/codex-pr-test-review",
+                    "",
+                    "发现 1 个 P0/P1 测试审查问题",
+                ),
+            ),
+            failures,
+        )
+
     def test_merge_success_copy_covers_all_duration_and_line_buckets(self):
         snapshot = PrSnapshot(
             number=1111,
@@ -636,6 +659,41 @@ class MonitorServiceTest(unittest.TestCase):
             self.assertEqual(1, changed.new_notifications)
             self.assertEqual(2, len(sender.calls))
             self.assertIn("unit test failed in module bar", sender.calls[1][1])
+
+    def test_codex_test_review_status_notifies_as_a_build_failure(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = FakeGiteaClient()
+            sender = SequenceSender(["success"])
+            service, store = self.make_service(
+                temp_dir,
+                client,
+                sender,
+                Clock(
+                    "2026-07-16T16:31:30+08:00",
+                    "2026-07-16T16:36:00+08:00",
+                ),
+            )
+            with store:
+                service.poll_once()
+                client.statuses = [
+                    {
+                        "id": 7,
+                        "context": "taichu/codex-pr-test-review",
+                        "status": "failure",
+                        "description": "Codex found 1 P0/P1 test review issue(s)",
+                        "updated_at": "2026-07-16T16:35:25+08:00",
+                    }
+                ]
+
+                report = service.poll_once()
+
+            self.assertEqual(1, report.new_notifications)
+            self.assertEqual(1, len(sender.calls))
+            self.assertIn(
+                "taichu/codex-pr-test-review：发现 1 个 P0/P1 测试审查问题",
+                sender.calls[0][1],
+            )
+            self.assertNotIn("\n", sender.calls[0][1])
 
     def test_repeated_approval_is_removed_but_dashboard_keeps_all_failures(self):
         with tempfile.TemporaryDirectory() as temp_dir:

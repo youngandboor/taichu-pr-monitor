@@ -34,6 +34,7 @@ DEFAULT_REPO = "TaiChu"
 GATE_CONTEXTS = [
     "protected-file-approval",
     "taichu/codex-pr-review",
+    "taichu/codex-pr-test-review",
     "taichu/pr-build",
     "taichu/dev-cloud-preflight",
     "ci/merge-gate",
@@ -50,6 +51,11 @@ ACTIVE_STATES = {"pending", "running"}
 CONTEXT_COMMENT_HINTS = {
     "protected-file-approval": ["protected-file", "protected file", "approval"],
     "taichu/codex-pr-review": ["codex-pr-review", "taichu-pr-codex-review", "codex review"],
+    "taichu/codex-pr-test-review": [
+        "taichu-codex-pr-test-review",
+        "taichu/codex-pr-test-review",
+        "codex pr test review",
+    ],
     "taichu/pr-build": ["taichu/pr-build", "pr-build", "/ci build", "ci build"],
     "taichu/dev-cloud-preflight": [
         "taichu-dev-cloud-preflight",
@@ -166,7 +172,9 @@ def latest_statuses_by_context(statuses: list[dict[str, Any]]) -> dict[str, dict
 
 
 def gate_items(
-    latest_statuses: dict[str, dict[str, Any]], comments: list[dict[str, Any]]
+    latest_statuses: dict[str, dict[str, Any]],
+    comments: list[dict[str, Any]],
+    current_head_sha: str = "",
 ) -> list[dict[str, Any]]:
     items = []
     for context in GATE_CONTEXTS:
@@ -176,7 +184,11 @@ def gate_items(
         state = normalize_state(status)
         if state in SUCCESS_STATES:
             continue
-        comment = latest_relevant_comment(context, comments) if state in FAILURE_STATES else None
+        comment = (
+            latest_relevant_comment(context, comments, current_head_sha)
+            if state in FAILURE_STATES
+            else None
+        )
         summary_parts = []
         description = clean_text(str(status.get("description") or ""))
         if description:
@@ -273,7 +285,7 @@ def build_summary(
     statuses = client.get_statuses(selector, head_sha)
     comments = client.get_issue_comments(selector, max_pages=comment_pages)
     latest = latest_statuses_by_context(statuses)
-    gates = gate_items(latest, comments)
+    gates = gate_items(latest, comments, head_sha)
     queues = queue_events(comments)
     now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
     return {
@@ -299,16 +311,57 @@ def build_summary(
 
 
 def latest_relevant_comment(
-    context: str, comments: list[dict[str, Any]]
+    context: str,
+    comments: list[dict[str, Any]],
+    current_head_sha: str = "",
 ) -> Optional[dict[str, Any]]:
     hints = CONTEXT_COMMENT_HINTS.get(context, [context])
     sorted_comments = sorted(comments, key=_comment_sort_key, reverse=True)
     for comment in sorted_comments:
         body = str(comment.get("body") or "")
         lowered = body.lower()
+        if references_different_head(body, current_head_sha):
+            continue
+        if context == "taichu/codex-pr-review" and (
+            "taichu-codex-pr-test-review" in lowered
+            or "taichu/codex-pr-test-review" in lowered
+        ):
+            continue
         if any(hint.lower() in lowered for hint in hints):
             return comment
     return None
+
+
+def references_different_head(body: str, current_head_sha: str) -> bool:
+    if len(current_head_sha) < 7:
+        return False
+    lower = str(body or "").lower()
+    explicit_heads = re.findall(
+        r"<!--\s*taichu-(?:protected-file-approval|"
+        r"codex-pr(?:-test)?-review)-head\s*:\s*"
+        r"`?([0-9a-f]{7,64})`?\s*-->",
+        lower,
+    )
+    if explicit_heads:
+        current = current_head_sha.lower()
+        return any(
+            not (current.startswith(head) or head.startswith(current))
+            for head in explicit_heads
+        )
+    if current_head_sha[:7].lower() in lower or current_head_sha[:12].lower() in lower:
+        return False
+    return any(
+        marker in lower
+        for marker in (
+            "pr head",
+            "当前 pr head",
+            "当前 head",
+            "顶端提交",
+            "pr 顶端",
+            "head |",
+            "| head |",
+        )
+    )
 
 
 def summarize_failure_text(text: str, max_chars: int = 1000) -> str:
@@ -1149,7 +1202,7 @@ def dashboard_html(selector: PrSelector) -> str:
     function renderGates(gates) {{
       const target = document.getElementById('gates');
       if (!gates.length) {{
-        target.innerHTML = '<p class="empty">五个关键门禁当前没有最新失败。</p>';
+        target.innerHTML = '<p class="empty">关键门禁当前没有最新失败。</p>';
         return;
       }}
       target.innerHTML = gates.map((gate) => {{

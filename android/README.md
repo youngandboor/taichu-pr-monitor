@@ -4,7 +4,7 @@
 
 ## 为什么值得用
 
-- **一眼定位阻塞项**：只关注五个关键门禁的最新状态与有效失败摘要。
+- **一眼定位阻塞项**：只关注六个关键门禁的最新状态与有效失败摘要。
 - **过滤历史噪音**：旧状态、旧评论和已经成功的失败记录不会反复干扰判断。
 - **看清排队进度**：分别展示最近一次 `/ci build` 与 `/ci merge` 的时间和队列状态。
 - **手机直接操作**：通过 `rebuild`、`remerge` 快速发送 CI 命令。
@@ -15,6 +15,7 @@
 
 - `protected-file-approval`
 - `taichu/codex-pr-review`
+- `taichu/codex-pr-test-review`
 - `taichu/pr-build`
 - `taichu/dev-cloud-preflight`
 - `ci/merge-gate`
@@ -87,7 +88,7 @@ app/build/outputs/apk/release/taichu_pr_monitor-release.apk
 
 - Android 8.0 及以上（minSdk 26）
 - 前台与 foreground service 后台轮询
-- 五门禁最新状态归一化
+- 六门禁最新状态归一化
 - 新失败去重通知
 - PR 切换隔离通知状态
 - 已在商用 vivo Android 手机验证安装与运行

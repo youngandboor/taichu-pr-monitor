@@ -9,6 +9,7 @@ It shows only:
 - latest non-success signal for these gates:
   - `protected-file-approval`
   - `taichu/codex-pr-review`
+  - `taichu/codex-pr-test-review`
   - `taichu/pr-build`
   - `taichu/dev-cloud-preflight`
   - `ci/merge-gate`

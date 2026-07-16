@@ -40,6 +40,7 @@ import java.util.TimeZone;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.regex.Pattern;
 
 public class PrMonitorService extends Service {
     private static final String API_BASE = "https://taichu.fun/gitea/api/v1";
@@ -59,9 +60,13 @@ public class PrMonitorService extends Service {
     private static final String STATUS_CHANNEL_ID = "pr_monitor_status";
     private static final int FOREGROUND_NOTIFICATION_ID = 1000;
     private static final long REFRESH_INTERVAL_MS = 60_000L;
+    private static final Pattern CODEX_BLOCKING_ISSUE = Pattern.compile(
+            "(?m)^\\s*[-*]\\s+P[01]\\b",
+            Pattern.CASE_INSENSITIVE);
     private static final String[] REQUIRED_GATES = {
             "protected-file-approval",
             "taichu/codex-pr-review",
+            "taichu/codex-pr-test-review",
             "taichu/pr-build",
             "taichu/dev-cloud-preflight",
             "ci/merge-gate"
@@ -183,6 +188,7 @@ public class PrMonitorService extends Service {
     private MonitorSummary fetchSummary(int prNumber, String token) throws Exception {
         JSONObject pr = requestObject(token, "/repos/" + OWNER + "/" + REPO + "/pulls/" + prNumber);
         JSONObject head = pr.optJSONObject("head");
+        JSONObject base = pr.optJSONObject("base");
         String headSha = head == null ? "" : head.optString("sha", "");
         if (headSha.isEmpty()) {
             throw new IOException("PR response has no head sha");
@@ -206,6 +212,7 @@ public class PrMonitorService extends Service {
         MonitorSummary summary = new MonitorSummary();
         summary.number = prNumber;
         summary.headSha = headSha;
+        summary.baseRef = base == null ? "" : base.optString("ref", "");
         summary.fetchedAt = isoNow();
         Map<String, GateStatus> latestByGate = new HashMap<>();
         for (JSONObject status : statuses) {
@@ -273,6 +280,7 @@ public class PrMonitorService extends Service {
                 summary.latestCiCommandAt,
                 summary.latestCiCommandKey,
                 summary.fetchedAt,
+                summary.baseRef,
                 failures);
     }
 
@@ -372,6 +380,10 @@ public class PrMonitorService extends Service {
         String context = "";
         if (lower.contains("protected-file-approval") || lower.contains("protected file")) {
             context = "protected-file-approval";
+        } else if (lower.contains("taichu-codex-pr-test-review")
+                || lower.contains("taichu/codex-pr-test-review")
+                || lower.contains("codex pr test review")) {
+            context = "taichu/codex-pr-test-review";
         } else if (lower.contains("taichu/codex-pr-review") || lower.contains("codex-pr-review")) {
             context = "taichu/codex-pr-review";
         } else if (lower.contains("taichu/pr-build") || lower.contains("pr-build") || lower.contains("/ci build")) {
@@ -386,7 +398,7 @@ public class PrMonitorService extends Service {
         }
         GateStatus gate = new GateStatus();
         gate.context = context;
-        gate.state = stateFromComment(body);
+        gate.state = stateFromComment(body, context);
         gate.summary = cleanCommentText(body);
         gate.updatedAt = firstNonEmpty(comment.optString("updated_at", ""), comment.optString("created_at", ""));
         return gate;
@@ -489,6 +501,7 @@ public class PrMonitorService extends Service {
     private String normalizeGateContext(String context) {
         String lower = valueOrEmpty(context).toLowerCase(Locale.ROOT);
         if (lower.contains("protected-file-approval")) return "protected-file-approval";
+        if (lower.contains("taichu/codex-pr-test-review")) return "taichu/codex-pr-test-review";
         if (lower.contains("taichu/codex-pr-review")) return "taichu/codex-pr-review";
         if (lower.contains("taichu/pr-build")) return "taichu/pr-build";
         if (lower.contains("taichu/dev-cloud-preflight")) return "taichu/dev-cloud-preflight";
@@ -500,8 +513,18 @@ public class PrMonitorService extends Service {
         return GateStateClassifier.isActionableFailure(state, summary);
     }
 
-    private String stateFromComment(String value) {
+    private String stateFromComment(String value, String context) {
         String lower = valueOrEmpty(value).toLowerCase(Locale.ROOT);
+        if ("taichu/codex-pr-review".equals(context)
+                || "taichu/codex-pr-test-review".equals(context)) {
+            if (lower.contains("found no p0/p1") || lower.contains("未发现原则问题")) {
+                return "success";
+            }
+            if (lower.contains("本次不调用 codex，直接失败")
+                    || CODEX_BLOCKING_ISSUE.matcher(valueOrEmpty(value)).find()) {
+                return "failure";
+            }
+        }
         if (lower.contains("执行结果：成功")
                 || lower.contains("执行结果: 成功")
                 || lower.contains("build success")
@@ -529,22 +552,7 @@ public class PrMonitorService extends Service {
     }
 
     private boolean referencesDifferentHead(String body, String currentHeadSha) {
-        if (currentHeadSha == null || currentHeadSha.length() < 7) {
-            return false;
-        }
-        String lower = body.toLowerCase(Locale.ROOT);
-        String short7 = currentHeadSha.substring(0, 7).toLowerCase(Locale.ROOT);
-        String short12 = currentHeadSha.substring(0, Math.min(12, currentHeadSha.length())).toLowerCase(Locale.ROOT);
-        if (lower.contains(short7) || lower.contains(short12)) {
-            return false;
-        }
-        return lower.contains("pr head")
-                || lower.contains("当前 pr head")
-                || lower.contains("当前 head")
-                || lower.contains("顶端提交")
-                || lower.contains("pr 顶端")
-                || lower.contains("head |")
-                || lower.contains("| head |");
+        return GateHeadMatcher.referencesDifferentHead(body, currentHeadSha);
     }
 
     private String exactCiCommand(String text) {
@@ -594,6 +602,7 @@ public class PrMonitorService extends Service {
     private static class MonitorSummary {
         int number;
         String headSha = "";
+        String baseRef = "";
         String fetchedAt = "";
         String latestCiCommand = "";
         String latestCiCommandAt = "";

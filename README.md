@@ -4,12 +4,14 @@
 
 ## 能做什么
 
-- 聚合并归一化五个关键门禁：
+- 聚合并归一化六个关键门禁：
   - `protected-file-approval`
   - `taichu/codex-pr-review`
+  - `taichu/codex-pr-test-review`
   - `taichu/pr-build`
   - `taichu/dev-cloud-preflight`
   - `ci/merge-gate`
+- `taichu/codex-pr-test-review` 按当前 head 是否实际产出结果来兼容：旧 PR 缺失时不制造失败，旧 PR 重新执行 Build 后产出该门禁时与新 PR 一样处理。
 - 只展示最新且有价值的失败摘要，避免旧评论反复干扰。
 - 显示最近的 `/ci build`、`/ci merge` 和队列状态。
 - 支持任意 `SystemAgentDev/TaiChu` PR 编号。

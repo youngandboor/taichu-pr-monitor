@@ -14,6 +14,7 @@ HarmonyOS native ArkTS app for monitoring TaiChu Gitea pull requests.
   - latest non-success signal for:
     - `protected-file-approval`
     - `taichu/codex-pr-review`
+    - `taichu/codex-pr-test-review`
     - `taichu/pr-build`
     - `taichu/dev-cloud-preflight`
     - `ci/merge-gate`

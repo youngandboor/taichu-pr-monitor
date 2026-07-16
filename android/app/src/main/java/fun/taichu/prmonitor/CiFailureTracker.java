@@ -3,6 +3,7 @@ package fun.taichu.prmonitor;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 final class CiFailureTracker {
@@ -67,11 +68,31 @@ final class CiFailureTracker {
     private static List<GateFailure> failuresAfterCommand(Snapshot snapshot) {
         List<GateFailure> result = new ArrayList<>();
         for (GateFailure failure : snapshot.failures) {
-            if (happenedAfter(failure.updatedAt, snapshot.latestCiCommandAt)) {
+            if (belongsToCurrentStage(snapshot, failure.context)
+                    && happenedAfter(failure.updatedAt, snapshot.latestCiCommandAt)) {
                 result.add(failure);
             }
         }
         return result;
+    }
+
+    private static boolean belongsToCurrentStage(Snapshot snapshot, String context) {
+        boolean releaseTarget = snapshot.baseRef.toLowerCase(Locale.ROOT).contains("release");
+        if ("/ci build".equals(snapshot.latestCiCommand)) {
+            if (releaseTarget) {
+                return "protected-file-approval".equals(context)
+                        || "taichu/pr-build".equals(context);
+            }
+            return "protected-file-approval".equals(context)
+                    || "taichu/codex-pr-review".equals(context)
+                    || "taichu/codex-pr-test-review".equals(context)
+                    || "taichu/pr-build".equals(context);
+        }
+        if ("/ci merge".equals(snapshot.latestCiCommand)) {
+            return "ci/merge-gate".equals(context)
+                    || (!releaseTarget && "taichu/dev-cloud-preflight".equals(context));
+        }
+        return false;
     }
 
     private static boolean happenedAfter(String eventAt, String commandAt) {
@@ -151,6 +172,7 @@ final class CiFailureTracker {
         final String latestCiCommandAt;
         final String latestCiCommandKey;
         final String scannedAt;
+        final String baseRef;
         final List<GateFailure> failures;
 
         Snapshot(
@@ -160,7 +182,14 @@ final class CiFailureTracker {
                 String latestCiCommandKey,
                 List<GateFailure> failures
         ) {
-            this(prNumber, latestCiCommand, latestCiCommandAt, latestCiCommandKey, "", failures);
+            this(
+                    prNumber,
+                    latestCiCommand,
+                    latestCiCommandAt,
+                    latestCiCommandKey,
+                    "",
+                    "",
+                    failures);
         }
 
         Snapshot(
@@ -171,11 +200,31 @@ final class CiFailureTracker {
                 String scannedAt,
                 List<GateFailure> failures
         ) {
+            this(
+                    prNumber,
+                    latestCiCommand,
+                    latestCiCommandAt,
+                    latestCiCommandKey,
+                    scannedAt,
+                    "",
+                    failures);
+        }
+
+        Snapshot(
+                int prNumber,
+                String latestCiCommand,
+                String latestCiCommandAt,
+                String latestCiCommandKey,
+                String scannedAt,
+                String baseRef,
+                List<GateFailure> failures
+        ) {
             this.prNumber = prNumber;
             this.latestCiCommand = latestCiCommand == null ? "" : latestCiCommand;
             this.latestCiCommandAt = latestCiCommandAt == null ? "" : latestCiCommandAt;
             this.latestCiCommandKey = latestCiCommandKey == null ? "" : latestCiCommandKey;
             this.scannedAt = scannedAt == null ? "" : scannedAt;
+            this.baseRef = baseRef == null ? "" : baseRef;
             this.failures = new ArrayList<>(failures);
         }
     }

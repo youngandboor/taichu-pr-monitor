@@ -323,6 +323,223 @@ class GateLogicTest(unittest.TestCase):
                     ),
                 )
 
+    def test_codex_test_review_marker_is_a_distinct_build_gate(self):
+        pr = {
+            "number": 1516,
+            "title": "Validate tests",
+            "user": {"login": "w00123"},
+            "head": {"sha": "abcdef1234567890"},
+            "base": {"ref": "main"},
+        }
+        comments = [
+            {
+                "id": 1,
+                "body": "/ci build",
+                "created_at": "2026-07-16T16:31:01+08:00",
+            },
+            {
+                "id": 2,
+                "body": (
+                    "<!-- taichu-codex-pr-test-review -->\n"
+                    "<!-- taichu-codex-pr-test-review-head:"
+                    "abcdef1234567890 -->\n"
+                    "### Codex PR Test Review\n"
+                    "| Status | `taichu/codex-pr-test-review` |\n"
+                    "#### 原则问题\n"
+                    "- P1 `tests/test_case.py:10`：关键失败路径没有断言。\n"
+                    "#### 建议\n"
+                    "- 补充回归测试。"
+                ),
+                "created_at": "2026-07-16T16:35:24+08:00",
+                "user": {"login": "taichu-ci-bot"},
+            },
+        ]
+
+        snapshot = build_pr_snapshot(
+            pr,
+            [],
+            comments,
+            scanned_at="2026-07-16T16:36:00+08:00",
+        )
+
+        self.assertEqual(
+            ["taichu/codex-pr-test-review"],
+            [item.context for item in snapshot.failures],
+        )
+        self.assertEqual(
+            "发现 1 个 P0/P1 测试审查问题",
+            snapshot.failures[0].summary,
+        )
+
+    def test_codex_test_review_accepts_rollout_comment_with_legacy_head_marker(self):
+        pr = {
+            "number": 1487,
+            "title": "Large change",
+            "user": {"login": "w00123"},
+            "head": {"sha": "abcdef1234567890"},
+            "base": {"ref": "main"},
+        }
+        body = (
+            "<!-- taichu-codex-pr-test-review -->\n"
+            "<!-- taichu-codex-pr-review-head:abcdef1234567890 -->\n"
+            "### Codex PR Review\n"
+            "| Status | `taichu/codex-pr-test-review` = `failure` |\n"
+            "#### 原则问题\n"
+            "- PR 变更规模超过 Codex 审查上限，本次不调用 Codex，直接失败。"
+        )
+        snapshot = build_pr_snapshot(
+            pr,
+            [],
+            [
+                {
+                    "id": 1,
+                    "body": "/ci build",
+                    "created_at": "2026-07-16T10:00:00+08:00",
+                },
+                {
+                    "id": 2,
+                    "body": body,
+                    "created_at": "2026-07-16T10:01:00+08:00",
+                    "user": {"login": "taichu-ci-bot"},
+                },
+            ],
+            scanned_at="2026-07-16T10:02:00+08:00",
+        )
+
+        self.assertEqual(
+            ["taichu/codex-pr-test-review"],
+            [item.context for item in snapshot.failures],
+        )
+        self.assertEqual(
+            "PR 变更规模超过 Codex 审查上限，本次不调用 Codex，直接失败。",
+            notification_summary("taichu/codex-pr-test-review", body),
+        )
+
+    def test_codex_test_review_rejects_an_async_result_for_an_old_head(self):
+        pr = {
+            "number": 1516,
+            "title": "Validate tests",
+            "user": {"login": "w00123"},
+            "head": {"sha": "bbbbbb1234567890"},
+            "base": {"ref": "main"},
+        }
+        snapshot = build_pr_snapshot(
+            pr,
+            [],
+            [
+                {
+                    "id": 1,
+                    "body": "/ci build",
+                    "created_at": "2026-07-16T16:31:01+08:00",
+                },
+                {
+                    "id": 2,
+                    "body": (
+                        "<!-- taichu-codex-pr-test-review -->\n"
+                        "<!-- taichu-codex-pr-test-review-head:"
+                        "aaaaaa1234567890 -->\n"
+                        "<!-- taichu-codex-pr-review-head:"
+                        "aaaaaa1234567890 -->\n"
+                        "### Codex PR Test Review\n"
+                        "| Status | `taichu/codex-pr-test-review` = `failure` |\n"
+                        "#### 原则问题\n"
+                        "- P1 这是旧 head 的异步结果。"
+                    ),
+                    "created_at": "2026-07-16T16:35:24+08:00",
+                    "user": {"login": "taichu-ci-bot"},
+                },
+            ],
+            scanned_at="2026-07-16T16:36:00+08:00",
+        )
+
+        self.assertFalse(
+            any(
+                item.context == "taichu/codex-pr-test-review"
+                for item in snapshot.gate_results
+            )
+        )
+        self.assertEqual((), snapshot.failures)
+
+    def test_codex_test_review_success_comment_stays_non_actionable(self):
+        pr = {
+            "number": 1516,
+            "title": "Validate tests",
+            "user": {"login": "w00123"},
+            "head": {"sha": "abcdef1234567890"},
+            "base": {"ref": "main"},
+        }
+        snapshot = build_pr_snapshot(
+            pr,
+            [],
+            [
+                {
+                    "id": 1,
+                    "body": "/ci build",
+                    "created_at": "2026-07-16T16:31:01+08:00",
+                },
+                {
+                    "id": 2,
+                    "body": (
+                        "<!-- taichu-codex-pr-test-review -->\n"
+                        "<!-- taichu-codex-pr-test-review-head:"
+                        "abcdef1234567890 -->\n"
+                        "### Codex PR Test Review\n"
+                        "| Status | `taichu/codex-pr-test-review` |\n"
+                        "#### 原则问题\n"
+                        "- 未发现原则问题。\n"
+                        "#### 未验证风险\n"
+                        "- 未执行真机 smoke。"
+                    ),
+                    "created_at": "2026-07-16T16:35:24+08:00",
+                    "user": {"login": "taichu-ci-bot"},
+                },
+            ],
+            scanned_at="2026-07-16T16:36:00+08:00",
+        )
+
+        result = next(
+            item
+            for item in snapshot.gate_results
+            if item.context == "taichu/codex-pr-test-review"
+        )
+        self.assertEqual("success", result.state)
+        self.assertEqual((), snapshot.failures)
+
+    def test_old_pr_without_codex_test_review_keeps_existing_gate_results(self):
+        pr = {
+            "number": 1400,
+            "title": "Legacy PR",
+            "user": {"login": "w00123"},
+            "head": {"sha": "abcdef1234567890"},
+            "base": {"ref": "main"},
+        }
+        snapshot = build_pr_snapshot(
+            pr,
+            [
+                {
+                    "id": 1,
+                    "context": "taichu/codex-pr-review",
+                    "status": "success",
+                    "description": "Codex found no P0/P1 principle issues",
+                    "updated_at": "2026-07-15T10:01:00+08:00",
+                }
+            ],
+            [
+                {
+                    "id": 1,
+                    "body": "/ci build",
+                    "created_at": "2026-07-15T10:00:00+08:00",
+                }
+            ],
+            scanned_at="2026-07-15T10:02:00+08:00",
+        )
+
+        self.assertEqual((), snapshot.failures)
+        self.assertEqual(
+            ["taichu/codex-pr-review"],
+            [item.context for item in snapshot.gate_results],
+        )
+
     def test_notification_text_strips_markup_and_truncates(self):
         text = "<!--hidden-->## **失败摘要** <b>boom</b> " + ("x" * 200)
 
@@ -361,6 +578,14 @@ class GateLogicTest(unittest.TestCase):
             notification_summary(
                 "taichu/codex-pr-review",
                 "2026-07-11 11:20:46 | Codex found 2 P0/P1 principle issue(s)",
+            ),
+        )
+        self.assertEqual(
+            "发现 2 个 P0/P1 测试审查问题",
+            notification_summary(
+                "taichu/codex-pr-test-review",
+                "2026-07-16 16:20:46 | Codex found 2 P0/P1 "
+                "test-validation issue(s)",
             ),
         )
 
@@ -718,6 +943,36 @@ class TrackerTest(unittest.TestCase):
             any(
                 key.startswith(PROBLEM_FINGERPRINT_PREFIX)
                 for key in result.state.notified_failure_keys
+            )
+        )
+
+    def test_upgrade_does_not_replay_an_existing_codex_test_review_failure(self):
+        existing = TrackerState(
+            "cmd-1",
+            frozenset(),
+            True,
+            "2026-07-16T17:00:00+08:00",
+        )
+        historical = self.snapshot(
+            scanned_at="2026-07-16T17:03:00+08:00",
+            failures=(
+                GateFailure(
+                    "taichu/codex-pr-test-review",
+                    "2026-07-16T16:35:25+08:00",
+                    "发现 1 个 P0/P1 测试审查问题",
+                ),
+            ),
+        )
+
+        upgraded = poll_tracker(existing, historical)
+        repeated = poll_tracker(upgraded.state, historical)
+
+        self.assertEqual((), upgraded.notifications)
+        self.assertEqual((), repeated.notifications)
+        self.assertTrue(
+            any(
+                "taichu/codex-pr-test-review" in key
+                for key in upgraded.state.notified_failure_keys
             )
         )
 
@@ -1247,6 +1502,65 @@ class TrackerTest(unittest.TestCase):
 
         self.assertTrue(merge_result.merge_success)
         self.assertEqual((), merge_result.notifications)
+
+    def test_codex_test_review_is_in_main_build_but_not_merge_or_release(self):
+        failure = GateFailure(
+            "taichu/codex-pr-test-review",
+            "2026-07-16T16:35:24+08:00",
+            "发现 1 个 P0/P1 测试审查问题",
+        )
+
+        main_baseline = poll_tracker(
+            TrackerState.empty(),
+            self.snapshot(scanned_at="2026-07-16T16:31:00+08:00"),
+        ).state
+        main_build = poll_tracker(
+            main_baseline,
+            self.snapshot(
+                scanned_at="2026-07-16T16:36:00+08:00",
+                failures=(failure,),
+            ),
+        )
+        self.assertEqual(
+            ["taichu/codex-pr-test-review"],
+            [item.context for item in main_build.notifications],
+        )
+
+        merge_baseline = poll_tracker(
+            TrackerState.empty(),
+            self.snapshot(
+                scanned_at="2026-07-16T16:31:00+08:00",
+                command="/ci merge",
+                command_key="merge-1",
+            ),
+        ).state
+        merge_result = poll_tracker(
+            merge_baseline,
+            self.snapshot(
+                scanned_at="2026-07-16T16:36:00+08:00",
+                command="/ci merge",
+                command_key="merge-1",
+                failures=(failure,),
+            ),
+        )
+        self.assertEqual((), merge_result.notifications)
+
+        release_baseline = poll_tracker(
+            TrackerState.empty(),
+            self.snapshot(
+                scanned_at="2026-07-16T16:31:00+08:00",
+                base_ref="Br_develop_device_release",
+            ),
+        ).state
+        release_result = poll_tracker(
+            release_baseline,
+            self.snapshot(
+                scanned_at="2026-07-16T16:36:00+08:00",
+                base_ref="Br_develop_device_release",
+                failures=(failure,),
+            ),
+        )
+        self.assertEqual((), release_result.notifications)
 
     def test_new_build_does_not_reuse_an_old_pr_build_failure(self):
         baseline = poll_tracker(
