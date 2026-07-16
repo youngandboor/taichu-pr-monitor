@@ -31,6 +31,11 @@ class DashboardStoreTest(unittest.TestCase):
                     "2026-07-10T10:04:00+08:00",
                     "preflight failed",
                 ),
+                GateFailure(
+                    "taichu/codex-pr-test-review",
+                    "2026-07-10T10:03:00+08:00",
+                    "发现 1 个 P0/P1 测试审查问题",
+                ),
             ),
             author_w3="y00123456",
         )
@@ -75,6 +80,16 @@ class DashboardStoreTest(unittest.TestCase):
                 self.assertEqual(1, payload["outbox_counts"]["total"])
                 self.assertEqual(1, payload["outbox_counts"]["uncertain"])
                 self.assertEqual(42, payload["pull_requests"][0]["number"])
+                self.assertEqual(
+                    {
+                        "taichu/dev-cloud-preflight",
+                        "taichu/codex-pr-test-review",
+                    },
+                    {
+                        item["context"]
+                        for item in payload["pull_requests"][0]["failures"]
+                    },
+                )
                 self.assertEqual("uncertain", payload["outbox"][0]["status"])
                 self.assertEqual("w00123", payload["recipient_candidates"][0]["author"])
                 self.assertEqual(

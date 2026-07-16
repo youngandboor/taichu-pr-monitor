@@ -20,6 +20,7 @@ final class PrBriefLogic {
     private static final List<String> GATE_CONTEXTS = Arrays.asList(
             "protected-file-approval",
             "taichu/codex-pr-review",
+            "taichu/codex-pr-test-review",
             "taichu/pr-build",
             "taichu/dev-cloud-preflight",
             "ci/merge-gate"
@@ -61,7 +62,7 @@ final class PrBriefLogic {
         PrBriefModels.Summary summary = new PrBriefModels.Summary();
         summary.fetchedAt = OffsetDateTime.now().toString();
         summary.pr = prInfo(prNumber, pr);
-        summary.gates = gateItems(latest, commentList);
+        summary.gates = gateItems(latest, commentList, summary.pr.headSha);
         summary.queue = queueEvents(commentList, 3);
         summary.hiddenSuccessContexts = hiddenSuccessContexts(latest);
         return summary;
@@ -108,7 +109,8 @@ final class PrBriefLogic {
 
     private static List<PrBriefModels.GateItem> gateItems(
             Map<String, JSONObject> latestStatuses,
-            List<JSONObject> comments
+            List<JSONObject> comments,
+            String currentHeadSha
     ) {
         List<PrBriefModels.GateItem> items = new ArrayList<>();
         for (String context : GATE_CONTEXTS) {
@@ -121,7 +123,9 @@ final class PrBriefLogic {
                 continue;
             }
 
-            JSONObject comment = FAILURE_STATES.contains(state) ? latestRelevantComment(context, comments) : null;
+            JSONObject comment = FAILURE_STATES.contains(state)
+                    ? latestRelevantComment(context, comments, currentHeadSha)
+                    : null;
             String description = cleanText(status.optString("description", ""));
             String commentSummary = comment == null ? "" : summarizeFailureText(comment.optString("body", ""), 1000);
             PrBriefModels.GateItem item = new PrBriefModels.GateItem();
@@ -200,12 +204,25 @@ final class PrBriefLogic {
         return best;
     }
 
-    private static JSONObject latestRelevantComment(String context, List<JSONObject> comments) {
+    private static JSONObject latestRelevantComment(
+            String context,
+            List<JSONObject> comments,
+            String currentHeadSha
+    ) {
         List<String> hints = contextHints(context);
         List<JSONObject> sorted = new ArrayList<>(comments);
         sorted.sort(commentComparator().reversed());
         for (JSONObject comment : sorted) {
-            String lowered = comment.optString("body", "").toLowerCase(Locale.ROOT);
+            String body = comment.optString("body", "");
+            String lowered = body.toLowerCase(Locale.ROOT);
+            if (GateHeadMatcher.referencesDifferentHead(body, currentHeadSha)) {
+                continue;
+            }
+            if ("taichu/codex-pr-review".equals(context)
+                    && (lowered.contains("taichu-codex-pr-test-review")
+                    || lowered.contains("taichu/codex-pr-test-review"))) {
+                continue;
+            }
             for (String hint : hints) {
                 if (lowered.contains(hint.toLowerCase(Locale.ROOT))) {
                     return comment;
@@ -221,6 +238,12 @@ final class PrBriefLogic {
         }
         if ("taichu/codex-pr-review".equals(context)) {
             return Arrays.asList("codex-pr-review", "taichu-pr-codex-review", "codex review");
+        }
+        if ("taichu/codex-pr-test-review".equals(context)) {
+            return Arrays.asList(
+                    "taichu-codex-pr-test-review",
+                    "taichu/codex-pr-test-review",
+                    "codex pr test review");
         }
         if ("taichu/pr-build".equals(context)) {
             return Arrays.asList("taichu/pr-build", "pr-build", "/ci build", "ci build");

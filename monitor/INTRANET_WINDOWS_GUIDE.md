@@ -7,13 +7,15 @@
 ## 最终会得到什么
 
 - 每 3 分钟检查一次 `SystemAgentDev/TaiChu` 的全部开放 PR；
-- 把五个关键门禁分成 Build 三项和 Merge 两项；
+- 把六个关键门禁分成普通目标分支的 Build 四项和 Merge 两项；
 - 第一次运行只建立基线，不补发历史问题；
 - 每轮 Build 或 Merge 失败最多私聊一次；
 - Build 门禁成功后保持静默，由提交人确认后手工评论 `/ci merge`；
 - Merge 成功后按 PR Diff 变更量与持续时间选择祝贺消息，并向提交人发送一次；
 - 从 Gitea `full_name` 自动生成“姓氏拼音首字母 + 8 位工号”的 WeLink W3 账号；
 - 浏览器可在 `http://127.0.0.1:8790` 查看完整发送记录、磁盘占用并动态设置免打扰工号。
+
+普通目标分支新增的第四个 Build 门禁是 `taichu/codex-pr-test-review`。旧 PR 没有该门禁结果时不会被判为失败；旧 PR 重新执行 Build 并产生该结果后会自动纳入。Release 目标分支仍沿用 Approval、PR Build 和 Merge Gate 三门禁。
 
 ## 开始前准备
 
@@ -265,11 +267,11 @@ py -3 -m monitor --strict-recipients --dashboard-host 0.0.0.0 --allow-remote-das
 
 1. 先确认持续监控已经完成至少一轮，工作台显示最近扫描成功；
 2. 在约定的测试 PR 触发新的 `/ci build`；
-3. 让三个 Build 门禁之一产生一个新失败；
+3. 让普通目标分支的四个 Build 门禁之一产生一个新失败；
 4. 等待一个轮询周期加扫描时间，通常不超过 4 分钟；
 5. 确认对应提交人或备用接收人收到单行 WeLink 消息，PR URL 位于消息最后且可正确点击；
 6. 让同一 Build 轮次出现第二个失败，确认不会再发第二条；
-7. 再触发一个新的 `/ci build` 并让三个 Build 门禁全部成功，确认没有 Build 成功私聊，PR 中也不会自动出现 `/ci merge`；
+7. 再触发一个新的 `/ci build` 并让普通目标分支的四个 Build 门禁全部成功，确认没有 Build 成功私聊，PR 中也不会自动出现 `/ci merge`；
 8. 由提交人手工评论 `/ci merge`，再让 Merge 门禁失败，确认提交人收到一次失败消息；
 9. 重新触发 `/ci merge` 并让两个 Merge 门禁成功，确认提交人收到一次“恭喜，Merge 已成功”；
 10. 在工作台“消息发送”中分别查看已发送、需人工处理和完整消息详情。

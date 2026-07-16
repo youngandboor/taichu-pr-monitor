@@ -15,6 +15,7 @@ DEFAULT_POLL_INTERVAL_SECONDS = 180
 GATE_CONTEXTS = (
     "protected-file-approval",
     "taichu/codex-pr-review",
+    "taichu/codex-pr-test-review",
     "taichu/pr-build",
     "taichu/dev-cloud-preflight",
     "ci/merge-gate",
@@ -23,6 +24,7 @@ GATE_CONTEXTS = (
 BUILD_GATE_CONTEXTS = (
     "protected-file-approval",
     "taichu/codex-pr-review",
+    "taichu/codex-pr-test-review",
     "taichu/pr-build",
 )
 
@@ -163,6 +165,8 @@ def normalize_gate_context(context: str) -> str:
     lower = _value(context).lower()
     if "protected-file-approval" in lower:
         return "protected-file-approval"
+    if "taichu/codex-pr-test-review" in lower:
+        return "taichu/codex-pr-test-review"
     if "taichu/codex-pr-review" in lower:
         return "taichu/codex-pr-review"
     if "taichu/pr-build" in lower:
@@ -444,6 +448,7 @@ def notification_summary(context: str, value: str) -> str:
     extractors = {
         "protected-file-approval": _approval_notification_summary,
         "taichu/codex-pr-review": _codex_notification_summary,
+        "taichu/codex-pr-test-review": _codex_test_notification_summary,
         "taichu/pr-build": _build_notification_summary,
         "taichu/dev-cloud-preflight": _preflight_notification_summary,
     }
@@ -511,6 +516,22 @@ def _codex_notification_summary(value: str) -> str:
     blocking = [bullet for bullet in bullets if re.match(r"^P[01]\b", bullet)]
     if blocking:
         return f"发现 {len(blocking)} 个 P0/P1 原则问题"
+    return _first_sentence(bullets[0]) if bullets else ""
+
+
+def _codex_test_notification_summary(value: str) -> str:
+    match = re.search(
+        r"Codex\s+found\s+(\d{1,3})\s+P0/P1\s+"
+        r"(?:test(?:[- ]validation|\s+review))\s+issue(?:\(s\)|s)?",
+        value,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        return f"发现 {match.group(1)} 个 P0/P1 测试审查问题"
+    bullets = _section_bullets(value, ("原则问题",))
+    blocking = [bullet for bullet in bullets if re.match(r"^P[01]\b", bullet)]
+    if blocking:
+        return f"发现 {len(blocking)} 个 P0/P1 测试审查问题"
     return _first_sentence(bullets[0]) if bullets else ""
 
 
@@ -799,6 +820,11 @@ def _looks_like_gate_template(context: str, value: str) -> bool:
             "codex pr review",
             "taichu-codex-pr-review",
         ),
+        "taichu/codex-pr-test-review": (
+            "taichu/codex-pr-test-review",
+            "codex pr test review",
+            "taichu-codex-pr-test-review",
+        ),
         "taichu/pr-build": (
             "taichu/pr-build",
             "taichu pr build",
@@ -822,6 +848,7 @@ def _default_gate_failure_summary(context: str) -> str:
     return {
         "protected-file-approval": "受保护文件审批未通过，详情见 PR",
         "taichu/codex-pr-review": "Codex Review 未通过，详情见 PR",
+        "taichu/codex-pr-test-review": "Codex Test Review 未通过，详情见 PR",
         "taichu/pr-build": "PR Build 失败，详情见 PR",
         "taichu/dev-cloud-preflight": "云侧 Preflight 未通过，详情见 PR",
         "ci/merge-gate": "Merge Gate 未通过，详情见 PR",
@@ -985,6 +1012,10 @@ def _comment_gate_context(body: str) -> str:
     lower = _value(body).lower()
     marker_contexts = (
         ("<!-- taichu-protected-file-approval", "protected-file-approval"),
+        (
+            "<!-- taichu-codex-pr-test-review",
+            "taichu/codex-pr-test-review",
+        ),
         ("<!-- taichu-codex-pr-review", "taichu/codex-pr-review"),
         ("<!-- external-ci/jenkins-pr-build", "taichu/pr-build"),
         ("<!-- taichu-dev-cloud-preflight", "taichu/dev-cloud-preflight"),
@@ -1005,6 +1036,11 @@ def _comment_gate_context(body: str) -> str:
             r"^\s*(?:#{1,6}\s*)?taichu/codex-pr-review\b|"
             r"^\s*#{1,6}\s*codex pr review\s*$",
             "taichu/codex-pr-review",
+        ),
+        (
+            r"^\s*(?:#{1,6}\s*)?taichu/codex-pr-test-review\b|"
+            r"^\s*#{1,6}\s*codex pr test review\s*$",
+            "taichu/codex-pr-test-review",
         ),
         (
             r"^\s*(?:#{1,6}\s*)?taichu/pr-build\b|"
@@ -1032,8 +1068,8 @@ def _state_from_comment(value: str, *, context: str = "") -> str:
     lower = _value(value).lower()
     if _is_build_timing_comment(value):
         return "unknown"
-    if context == "taichu/codex-pr-review":
-        return _codex_comment_state(value)
+    if context in {"taichu/codex-pr-review", "taichu/codex-pr-test-review"}:
+        return _codex_comment_state(value, context=context)
     if any(
         marker in lower
         for marker in (
@@ -1076,11 +1112,12 @@ def _state_from_comment(value: str, *, context: str = "") -> str:
     return "unknown"
 
 
-def _codex_comment_state(value: str) -> str:
+def _codex_comment_state(value: str, *, context: str) -> str:
     structured = _notification_structured_text(value)
     lower = structured.lower()
     status = re.search(
-        r"taichu/codex-pr-review\s*=\s*(?:failure|failed|success|successful)",
+        rf"{re.escape(context)}\s*=\s*"
+        r"(?:failure|failed|success|successful)",
         lower,
     )
     if status:
@@ -1089,7 +1126,9 @@ def _codex_comment_state(value: str) -> str:
         return "failure"
 
     count = re.search(
-        r"codex\s+found\s+(\d{1,3})\s+p0/p1\s+principle\s+issue(?:\(s\)|s)?",
+        r"codex\s+found\s+(\d{1,3})\s+p0/p1\s+"
+        r"(?:principle|test(?:[- ]validation|\s+review))\s+"
+        r"issue(?:\(s\)|s)?",
         lower,
     )
     if count:
@@ -1148,6 +1187,18 @@ def _references_different_head(body: str, current_head_sha: str) -> bool:
     if len(current_head_sha) < 7:
         return False
     lower = _value(body).lower()
+    explicit_heads = re.findall(
+        r"<!--\s*taichu-(?:protected-file-approval|"
+        r"codex-pr(?:-test)?-review)-head\s*:\s*"
+        r"`?([0-9a-f]{7,64})`?\s*-->",
+        lower,
+    )
+    if explicit_heads:
+        current = current_head_sha.lower()
+        return any(
+            not (current.startswith(head) or head.startswith(current))
+            for head in explicit_heads
+        )
     if current_head_sha[:7].lower() in lower or current_head_sha[:12].lower() in lower:
         return False
     return any(

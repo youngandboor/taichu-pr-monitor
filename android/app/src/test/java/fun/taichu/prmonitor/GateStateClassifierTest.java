@@ -31,4 +31,17 @@ public class GateStateClassifierTest {
         assertTrue(GateStateClassifier.isSuccessful("success", summary));
         assertFalse(GateStateClassifier.isActionableFailure("success", summary));
     }
+
+    @Test
+    public void codexTestReviewSupportsStatusFieldAndSuccessDescription() {
+        String success = "Codex found no P0/P1 test-validation issues";
+
+        assertEquals("success", GateStateClassifier.effectiveState("", success));
+        assertTrue(GateStateClassifier.isSuccessful("", success));
+        assertEquals(
+                "failure",
+                GateStateClassifier.effectiveState(
+                        "failure",
+                        "Codex found 1 P0/P1 test review issue(s)"));
+    }
 }

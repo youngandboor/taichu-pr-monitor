@@ -81,16 +81,20 @@ public class MainActivity extends Activity {
     private static final String[] REQUIRED_GATES = {
             "protected-file-approval",
             "taichu/codex-pr-review",
+            "taichu/codex-pr-test-review",
             "taichu/pr-build",
             "taichu/dev-cloud-preflight",
             "ci/merge-gate"
     };
     private static final int DEFAULT_PR_NUMBER = 1;
     private static final Set<String> PRECONDITION_GATES = new HashSet<>();
+    private static final Set<String> OPTIONAL_PRECONDITION_GATES = new HashSet<>();
     static {
         PRECONDITION_GATES.add("protected-file-approval");
         PRECONDITION_GATES.add("taichu/codex-pr-review");
+        PRECONDITION_GATES.add("taichu/codex-pr-test-review");
         PRECONDITION_GATES.add("taichu/pr-build");
+        OPTIONAL_PRECONDITION_GATES.add("taichu/codex-pr-test-review");
     }
 
     private static final String STORE_NAME = "pr_monitor_auth";
@@ -975,6 +979,9 @@ public class MainActivity extends Activity {
         for (String context : REQUIRED_GATES) {
             GateItem item = latestByContext.get(context);
             if (item == null) {
+                if (OPTIONAL_PRECONDITION_GATES.contains(context)) {
+                    continue;
+                }
                 GateItem missing = missingGate(context, summary.headSha,
                         PRECONDITION_GATES.contains(context)
                                 ? "前置门禁尚未产出当前 head 结果。"
@@ -1021,6 +1028,9 @@ public class MainActivity extends Activity {
     private boolean preconditionsPassed(Map<String, GateItem> latestByContext) {
         for (String context : PRECONDITION_GATES) {
             GateItem item = latestByContext.get(context);
+            if (item == null && OPTIONAL_PRECONDITION_GATES.contains(context)) {
+                continue;
+            }
             if (item == null || !isSuccessfulGate(item)) {
                 return false;
             }
@@ -1135,6 +1145,7 @@ public class MainActivity extends Activity {
                 summary.latestCiCommandAt,
                 summary.latestCiCommandKey,
                 summary.fetchedAt,
+                summary.baseRef,
                 failures);
     }
 
@@ -1551,6 +1562,7 @@ public class MainActivity extends Activity {
     private String normalizeGateContext(String context) {
         String lower = context.toLowerCase(Locale.ROOT);
         if (lower.contains("protected-file-approval")) return "protected-file-approval";
+        if (lower.contains("taichu/codex-pr-test-review")) return "taichu/codex-pr-test-review";
         if (lower.contains("taichu/codex-pr-review")) return "taichu/codex-pr-review";
         if (lower.contains("taichu/pr-build")) return "taichu/pr-build";
         if (lower.contains("taichu/dev-cloud-preflight")) return "taichu/dev-cloud-preflight";
@@ -1893,22 +1905,7 @@ public class MainActivity extends Activity {
     }
 
     private boolean referencesDifferentHead(String body, String currentHeadSha) {
-        if (currentHeadSha == null || currentHeadSha.length() < 7) {
-            return false;
-        }
-        String lower = body.toLowerCase(Locale.ROOT);
-        String short7 = currentHeadSha.substring(0, 7).toLowerCase(Locale.ROOT);
-        String short12 = currentHeadSha.substring(0, Math.min(12, currentHeadSha.length())).toLowerCase(Locale.ROOT);
-        if (lower.contains(short7) || lower.contains(short12)) {
-            return false;
-        }
-        return lower.contains("pr head")
-                || lower.contains("当前 pr head")
-                || lower.contains("当前 head")
-                || lower.contains("顶端提交")
-                || lower.contains("pr 顶端")
-                || lower.contains("head |")
-                || lower.contains("| head |");
+        return GateHeadMatcher.referencesDifferentHead(body, currentHeadSha);
     }
 
     private String shortSha(String value) {

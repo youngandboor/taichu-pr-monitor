@@ -99,6 +99,109 @@ class GiteaPrBriefTest(unittest.TestCase):
         self.assertEqual(gates[0]["context"], "protected-file-approval")
         self.assertEqual(gates[0]["summary"], "approval missing")
 
+    def test_codex_test_review_failure_uses_its_own_rollout_comment(self):
+        latest_statuses = {
+            "taichu/codex-pr-review": {
+                "context": "taichu/codex-pr-review",
+                "status": "failure",
+                "description": "Codex found 1 P0/P1 principle issue(s)",
+            },
+            "taichu/codex-pr-test-review": {
+                "context": "taichu/codex-pr-test-review",
+                "status": "failure",
+                "description": "Codex found 1 P0/P1 test review issue(s)",
+            },
+        }
+        comments = [
+            {
+                "body": (
+                    "<!-- taichu-codex-pr-review -->\n"
+                    "### Codex PR Review\n"
+                    "#### 原则问题\n- P1 production issue"
+                ),
+                "html_url": "https://example.test/code-review",
+                "updated_at": "2026-07-16T16:20:00+08:00",
+            },
+            {
+                "body": (
+                    "<!-- taichu-codex-pr-test-review -->\n"
+                    "<!-- taichu-codex-pr-review-head:abcdef123456 -->\n"
+                    "### Codex PR Review\n"
+                    "| Status | `taichu/codex-pr-test-review` = `failure` |\n"
+                    "#### 原则问题\n- P1 missing regression test"
+                ),
+                "html_url": "https://example.test/test-review",
+                "updated_at": "2026-07-16T16:21:00+08:00",
+            },
+        ]
+
+        gates = brief.gate_items(latest_statuses, comments)
+
+        self.assertEqual(
+            ["taichu/codex-pr-review", "taichu/codex-pr-test-review"],
+            [item["context"] for item in gates],
+        )
+        self.assertEqual(
+            "https://example.test/code-review",
+            gates[0]["comment_url"],
+        )
+        self.assertEqual(
+            "https://example.test/test-review",
+            gates[1]["comment_url"],
+        )
+
+    def test_codex_test_review_success_is_hidden_and_absence_is_not_synthesized(self):
+        successful = brief.gate_items(
+            {
+                "taichu/codex-pr-test-review": {
+                    "context": "taichu/codex-pr-test-review",
+                    "status": "success",
+                    "description": "Codex found no P0/P1 test-validation issues",
+                }
+            },
+            [],
+        )
+        legacy = brief.gate_items(
+            {
+                "taichu/pr-build": {
+                    "context": "taichu/pr-build",
+                    "status": "success",
+                    "description": "build success",
+                }
+            },
+            [],
+        )
+
+        self.assertEqual([], successful)
+        self.assertEqual([], legacy)
+
+    def test_codex_test_review_does_not_attach_an_old_head_comment(self):
+        gates = brief.gate_items(
+            {
+                "taichu/codex-pr-test-review": {
+                    "context": "taichu/codex-pr-test-review",
+                    "status": "failure",
+                    "description": "Codex found 1 P0/P1 test review issue(s)",
+                }
+            },
+            [
+                {
+                    "body": (
+                        "<!-- taichu-codex-pr-test-review -->\n"
+                        "<!-- taichu-codex-pr-test-review-head:"
+                        "aaaaaa1234567890 -->\n"
+                        "#### 原则问题\n- P1 old-head-only detail"
+                    ),
+                    "html_url": "https://example.test/old-head",
+                }
+            ],
+            "bbbbbb1234567890",
+        )
+
+        self.assertEqual(1, len(gates))
+        self.assertEqual("", gates[0]["comment_url"])
+        self.assertNotIn("old-head-only detail", gates[0]["summary"])
+
     def test_queue_events_should_prefer_recent_ci_comments(self):
         comments = [
             {

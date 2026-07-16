@@ -197,6 +197,63 @@ public class CiFailureTrackerTest {
         assertTrue(result.notifications.isEmpty());
     }
 
+    @Test
+    public void codexTestReviewOnlyAlertsDuringMainBuild() {
+        CiFailureTracker.GateFailure testReview = failure(
+                "taichu/codex-pr-test-review",
+                "2026-07-16T16:35:25+08:00",
+                "Codex found 1 P0/P1 test review issue(s)");
+
+        CiFailureTracker.Result mainBuild = CiFailureTracker.poll(
+                new CiFailureTracker.State(
+                        "build-1",
+                        new HashSet<>(),
+                        true,
+                        "2026-07-16T16:31:00+08:00"),
+                snapshotForBase("/ci build", "build-1", "main", testReview));
+        CiFailureTracker.Result mainMerge = CiFailureTracker.poll(
+                new CiFailureTracker.State(
+                        "merge-1",
+                        new HashSet<>(),
+                        true,
+                        "2026-07-16T16:31:00+08:00"),
+                snapshotForBase("/ci merge", "merge-1", "main", testReview));
+        CiFailureTracker.Result releaseBuild = CiFailureTracker.poll(
+                new CiFailureTracker.State(
+                        "build-1",
+                        new HashSet<>(),
+                        true,
+                        "2026-07-16T16:31:00+08:00"),
+                snapshotForBase(
+                        "/ci build",
+                        "build-1",
+                        "Br_develop_device_release",
+                        testReview));
+
+        assertEquals(1, mainBuild.notifications.size());
+        assertEquals(
+                "taichu/codex-pr-test-review",
+                mainBuild.notifications.get(0).context);
+        assertTrue(mainMerge.notifications.isEmpty());
+        assertTrue(releaseBuild.notifications.isEmpty());
+    }
+
+    private static CiFailureTracker.Snapshot snapshotForBase(
+            String command,
+            String commandKey,
+            String baseRef,
+            CiFailureTracker.GateFailure... failures
+    ) {
+        return new CiFailureTracker.Snapshot(
+                1516,
+                command,
+                "2026-07-16T16:31:01+08:00",
+                commandKey,
+                "2026-07-16T16:36:00+08:00",
+                baseRef,
+                Arrays.asList(failures));
+    }
+
     private static CiFailureTracker.Snapshot snapshot(
             int prNumber,
             String command,

@@ -7,16 +7,17 @@
 ## 当前行为
 
 - 以 `https://taichu.fun/gitea/SystemAgentDev/TaiChu/pulls` 下的开放 PR 建立监控；上一轮仍开放、本轮消失的 PR 会额外核验一次最终状态。
-- Build 阶段只检查 `protected-file-approval`、`taichu/codex-pr-review`、`taichu/pr-build`。
+- 普通目标分支的 Build 阶段检查 `protected-file-approval`、`taichu/codex-pr-review`、`taichu/codex-pr-test-review`、`taichu/pr-build`。
 - Merge 阶段只检查 `taichu/dev-cloud-preflight`、`ci/merge-gate`。
 - 目标分支名包含 `release` 的 PR 使用发布门禁：Build 只检查 Approval 和 PR Build，Merge 只检查 Merge Gate。
+- `taichu/codex-pr-test-review` 按当前 head 的实际结果兼容：旧 PR 未产出该门禁时不制造缺失失败；旧 PR 后续重新执行 `/ci build` 并产出结果时，与新 PR 一样纳入 Build 判断。
 - 完全忽略由 `taichu-ci-bot` 创建的 PR，不扫描、不发送、不在工作台中展示；历史待发记录也会自动标记为已跳过。
 - 忽略旧 head、队列状态、构建耗时评论和旧命令之前的失败。
 - 第一次看到某个 PR 时只建立基线，不发送已有历史失败或历史成功。
 - 每个 `/ci build` 轮次最多发送一条失败消息；只列这个 PR 尚未通知过的新问题，多个新失败项合并在同一行。
 - `protected-file-approval` 对同一个 PR 最多通知一次；其他门禁按“门禁 + 提炼后的失败摘要”跨 CI 轮次去重。相同根因重跑不再私聊，摘要确实变化时仍可在后续轮次通知。
 - 降噪只影响 WeLink；工作台始终展示 PR 当前的完整失败状态，不会隐藏已通知或被抑制的问题。
-- 失败摘要按门禁提炼：Approval 取“结果”，Codex 取 P0/P1 数量或特殊阻塞原因，PR Build/Merge Gate 取结构化失败任务，Preflight 只取 FAIL 用例行；Jenkins 链接、产物和长日志不会进入私聊。
+- 失败摘要按门禁提炼：Approval 取“结果”，Codex Code Review 与 Test Review 分别提炼 P0/P1 数量或特殊阻塞原因，PR Build/Merge Gate 取结构化失败任务，Preflight 只取 FAIL 用例行；Jenkins 链接、产物和长日志不会进入私聊。
 - Build 门禁全部成功后保持静默：不发成功私聊，也不自动评论 `/ci merge`。是否进入 Merge 阶段由提交人确认后手工评论 `/ci merge`；`--dry-run` 只打印原本会发送的 WeLink 消息。
 - 每个 `/ci merge` 轮次同样最多发送一条只含新问题的失败消息；Merge Gate 成功但 PR 仍开放时不发祝贺，只有 Gitea 最终确认 `state=closed`、`merged=true` 且存在 `merged_at` 后才发送成功消息。
 - 成功文案以 `additions + deletions` 的 Diff 变更量和 `merged_at - created_at` 选择档位。实际变更行数以不带千分位的纯数字自然嵌入正文，持续时间只参与选档、不单独展示；行数字段无法解析时仍发送通用成功消息。

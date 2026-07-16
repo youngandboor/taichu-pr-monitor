@@ -4,6 +4,7 @@ import { GiteaConfig } from './GiteaConfig';
 const GATE_CONTEXTS: Array<string> = [
   'protected-file-approval',
   'taichu/codex-pr-review',
+  'taichu/codex-pr-test-review',
   'taichu/pr-build',
   'taichu/dev-cloud-preflight',
   'ci/merge-gate'
@@ -38,7 +39,7 @@ export class PrBriefLogic {
     const summary = new PrSummary();
     summary.fetchedAt = new Date().toISOString();
     summary.pr = PrBriefLogic.prInfo(prNumber, pr);
-    summary.gates = PrBriefLogic.gateItems(latest, comments);
+    summary.gates = PrBriefLogic.gateItems(latest, comments, summary.pr.headSha);
     summary.queue = PrBriefLogic.queueEvents(comments, 3);
     summary.hiddenSuccessContexts = PrBriefLogic.hiddenSuccessContexts(latest);
     return summary;
@@ -87,7 +88,8 @@ export class PrBriefLogic {
 
   private static gateItems(
     latestStatuses: Record<string, JsonObject>,
-    comments: Array<JsonObject>
+    comments: Array<JsonObject>,
+    currentHeadSha: string
   ): Array<GateItem> {
     const items: Array<GateItem> = [];
     for (const context of GATE_CONTEXTS) {
@@ -101,7 +103,7 @@ export class PrBriefLogic {
       }
 
       const comment = FAILURE_STATES.includes(state)
-        ? PrBriefLogic.latestRelevantComment(context, comments)
+        ? PrBriefLogic.latestRelevantComment(context, comments, currentHeadSha)
         : undefined;
       const description = PrBriefLogic.cleanText(PrBriefLogic.stringValue(status, 'description'));
       const commentSummary = comment
@@ -185,12 +187,25 @@ export class PrBriefLogic {
     return best;
   }
 
-  private static latestRelevantComment(context: string, comments: Array<JsonObject>): JsonObject | undefined {
+  private static latestRelevantComment(
+    context: string,
+    comments: Array<JsonObject>,
+    currentHeadSha: string
+  ): JsonObject | undefined {
     const hints = PrBriefLogic.contextHints(context);
     const sorted = comments.slice().sort((left, right) => PrBriefLogic.commentSortKey(right)
       .localeCompare(PrBriefLogic.commentSortKey(left)));
     for (const comment of sorted) {
-      const lowered = PrBriefLogic.stringValue(comment, 'body').toLowerCase();
+      const body = PrBriefLogic.stringValue(comment, 'body');
+      const lowered = body.toLowerCase();
+      if (PrBriefLogic.referencesDifferentHead(body, currentHeadSha)) {
+        continue;
+      }
+      if (context === 'taichu/codex-pr-review'
+        && (lowered.includes('taichu-codex-pr-test-review')
+          || lowered.includes('taichu/codex-pr-test-review'))) {
+        continue;
+      }
       for (const hint of hints) {
         if (lowered.includes(hint.toLowerCase())) {
           return comment;
@@ -200,12 +215,53 @@ export class PrBriefLogic {
     return undefined;
   }
 
+  private static referencesDifferentHead(body: string, currentHeadSha: string): boolean {
+    if (currentHeadSha.length < 7) {
+      return false;
+    }
+    const lowered = body.toLowerCase();
+    const current = currentHeadSha.toLowerCase();
+    const markerPattern: RegExp = /<!--\s*taichu-(?:protected-file-approval|codex-pr(?:-test)?-review)-head\s*:\s*`?([0-9a-f]{7,64})`?\s*-->/gi;
+    let marker: RegExpExecArray | null = markerPattern.exec(lowered);
+    let foundMarker = false;
+    while (marker !== null) {
+      foundMarker = true;
+      const markedHead = marker[1].toLowerCase();
+      if (!current.startsWith(markedHead) && !markedHead.startsWith(current)) {
+        return true;
+      }
+      marker = markerPattern.exec(lowered);
+    }
+    if (foundMarker) {
+      return false;
+    }
+    if (lowered.includes(current.slice(0, 7)) || lowered.includes(current.slice(0, 12))) {
+      return false;
+    }
+    return [
+      'pr head',
+      '当前 pr head',
+      '当前 head',
+      '顶端提交',
+      'pr 顶端',
+      'head |',
+      '| head |'
+    ].some((value: string) => lowered.includes(value));
+  }
+
   private static contextHints(context: string): Array<string> {
     if (context === 'protected-file-approval') {
       return ['protected-file', 'protected file', 'approval'];
     }
     if (context === 'taichu/codex-pr-review') {
       return ['codex-pr-review', 'taichu-pr-codex-review', 'codex review'];
+    }
+    if (context === 'taichu/codex-pr-test-review') {
+      return [
+        'taichu-codex-pr-test-review',
+        'taichu/codex-pr-test-review',
+        'codex pr test review'
+      ];
     }
     if (context === 'taichu/pr-build') {
       return ['taichu/pr-build', 'pr-build', '/ci build', 'ci build'];
